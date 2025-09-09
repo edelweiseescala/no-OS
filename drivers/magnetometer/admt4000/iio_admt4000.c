@@ -41,14 +41,9 @@
 #include "iio.h"
 #include "iio_trigger.h"
 
+#include "no_os_print_log.h"
 static int admt4000_iio_read_raw(void *dev, char *buf, uint32_t len,
 				 const struct iio_ch_info *channel, intptr_t priv);
-
-static int admt4000_iio_read_samples(void *dev, int16_t *buff,
-				     uint32_t samples);
-
-static int32_t admt4000_iio_submit_samples(struct iio_device_data
-		*iio_dev_data);
 
 static int admt4000_iio_read_scale(void *dev, char *buf, uint32_t len,
 				   const struct iio_ch_info *channel, intptr_t priv);
@@ -230,8 +225,8 @@ static struct scan_type admt4000_iio_temp_scan_type = {
 
 static struct scan_type admt4000_iio_turns_scan_type = {
 	.sign = 's',
-	.realbits = 6,
-	.storagebits = 8,
+	.realbits = 8,
+	.storagebits = 16,
 	.shift = 0,
 	.is_big_endian = false
 };
@@ -246,11 +241,11 @@ static struct scan_type admt4000_iio_sincos_scan_type = {
 
 static struct iio_channel admt4000_channels[] = {
 	{
-		.name = "turn count",
+		.name = "turns",
 		.ch_type = IIO_COUNT,
 		.channel = 0,
-		.address = 0,
-		.scan_index = 0,
+		.address = ADMT4000_TURNS,
+		.scan_index = ADMT4000_TURNS,
 		.attributes = admt4000_turn_attrs,
 		.scan_type = &admt4000_iio_turns_scan_type,
 		.ch_out = false
@@ -260,7 +255,7 @@ static struct iio_channel admt4000_channels[] = {
 		.ch_type = IIO_ANGL,
 		.channel = 0,
 		.address = 1,
-		.scan_index = 1,
+		.scan_index = ADMT4000_ANGLE,
 		.attributes = admt4000_angle_attrs,
 		.scan_type = &admt4000_iio_angle_scan_type,
 		.indexed = 1,
@@ -269,7 +264,7 @@ static struct iio_channel admt4000_channels[] = {
 	{
 		.ch_type = IIO_TEMP,
 		.address = ADMT4000_TEMP,
-		.scan_index = 2,
+		.scan_index = ADMT4000_TEMP,
 		.attributes = admt4000_temp_attrs,
 		.scan_type = &admt4000_iio_temp_scan_type,
 		.ch_out = false
@@ -278,8 +273,8 @@ static struct iio_channel admt4000_channels[] = {
 		.name = "cosine",
 		.ch_type = IIO_COUNT,
 		.channel = 1,
-		.address = 3,
-		.scan_index = 3,
+		.address = ADMT4000_COSINE,
+		.scan_index = ADMT4000_COSINE,
 		.attributes = admt4000_sincos_attrs,
 		.scan_type = &admt4000_iio_sincos_scan_type,
 		.indexed = 1,
@@ -289,8 +284,8 @@ static struct iio_channel admt4000_channels[] = {
 		.name = "sine",
 		.ch_type = IIO_COUNT,
 		.channel = 2,
-		.address = 4,
-		.scan_index = 4,
+		.address = ADMT4000_SINE,
+		.scan_index = ADMT4000_SINE,
 		.attributes = admt4000_sincos_attrs,
 		.scan_type = &admt4000_iio_sincos_scan_type,
 		.indexed = 1,
@@ -304,10 +299,7 @@ static struct iio_device admt4000_iio_dev = {
 	.channels = admt4000_channels,
 	.debug_reg_read = (int32_t (*)())admt4000_iio_reg_read,
 	.debug_reg_write = (int32_t (*)())admt4000_iio_reg_write,
-	.pre_enable = (int32_t (*)())admt4000_iio_update_channels,
 	.trigger_handler = (int32_t (*)())admt4000_iio_trigger_handler,
-	.submit = (int32_t (*)())admt4000_iio_submit_samples,
-	//.read_dev = (int32_t (*)()) admt4000_iio_read_samples,
 };
 
 /**
@@ -326,7 +318,7 @@ int admt4000_iio_init(struct admt4000_iio_dev **iio_dev,
 	if (!init_param)
 		return -EINVAL;
 
-	descriptor = no_os_calloc(1, sizeof(*descriptor));
+	descriptor = (struct admt4000_iio_dev *)no_os_calloc(1, sizeof(*descriptor));
 	if (!descriptor)
 		return -ENOMEM;
 
@@ -1011,6 +1003,7 @@ static int admt4000_iio_read_raw(void *dev, char *buf, uint32_t len,
 			case 0:
 				if (turns > ADMT4000_TURN_CNT_THRES)
 					turns = (int8_t)(turns) - ADMT4000_TURN_CNT_TWOS;
+
 				ret = no_os_sign_extend32(turns, 7);
 				break;
 			case 1:
@@ -1045,115 +1038,6 @@ static int admt4000_iio_read_raw(void *dev, char *buf, uint32_t len,
 }
 
 /**
- * @brief Reads the number of given samples for the selected channels
- *
- * @param dev     - The iio device structure.
- * @param buf	  - Command buffer to be filled with requested data.
- * @param samples - Number of samples to be returned
- *
- * @return ret    - 0 in case of success, errno errors otherwise
-*/
-static int admt4000_iio_read_samples(void *dev, int16_t *buff,
-				     uint32_t samples)
-{
-	struct admt4000_iio_dev *iio_admt4000;
-	struct admt4000_dev *admt4000;
-	bool is_one_shot, cnv;
-	uint16_t angles[2];
-	int i, ret;
-	int8_t turns;
-
-	if (!dev)
-		return -EINVAL;
-
-	iio_admt4000 = (struct admt4000_iio_dev *)dev;
-
-	if (!iio_admt4000->admt4000_desc)
-		return -EINVAL;
-
-	admt4000 = iio_admt4000->admt4000_desc;
-
-	/* Conversion mode can be set in attribute page */
-	ret = admt4000_get_conv_mode(admt4000, &is_one_shot);
-	if (ret)
-		return ret;
-
-	for (i = 0; i < samples * iio_admt4000->no_of_active_channels;) {
-
-		/* Set CNV High at every start of the routine*/
-		if (is_one_shot) {
-			ret = admt4000_toggle_cnv(admt4000);
-		} /*else {
-			ret = admt4000_set_cnv(admt4000, false);
-			if (ret)
-				return ret;
-		} */
-		// previous working delay 250uS
-		no_os_udelay(500);
-
-		/**
-		 * This section of code processes data from the ADMT4000 magnetometer sensor
-		 * and populates the provided buffer (`buff`) with the requested data based
-		 * on the active channels specified in `iio_admt4000->active_channels`.
-		 */
-
-		/* Retrieves raw turns and angle data using `admt4000_get_raw_turns_and_angle`.
-		*    - If channel 0 is active, the first angle component is stored in the buffer.
-		*    - If channel 1 is active, the second angle component is stored in the buffer.
-		*    - If channel 2 is active, the turns count is adjusted for threshold and stored. */
-		ret = admt4000_get_raw_turns_and_angle(admt4000, &turns, angles);
-		if (ret)
-			break;
-
-		if (iio_admt4000->active_channels & NO_OS_BIT(ADMT4000_TURN_COUNT)) {
-			if (turns > ADMT4000_TURN_CNT_THRES)
-				turns = (int8_t)(turns) - ADMT4000_TURN_CNT_TWOS;
-
-			buff[i] = (int16_t) turns;
-			i++;
-		}
-
-		if (iio_admt4000->active_channels & NO_OS_BIT(ADMT4000_ANGLE_12BIT)) {
-			buff[i] = (int16_t) angles[1];
-			i++;
-		}
-
-		/* If channel 3 is active, the temperature is retrieved using `admt4000_get_temp`
-		*  and stored in the buffer. */
-		if (iio_admt4000->active_channels & NO_OS_BIT(ADMT4000_TEMP)) {
-			ret = admt4000_get_temp(admt4000, &buff[i], true);
-			i++;
-		}
-
-		if (ret)
-			break;
-
-		/* If channel 4 is active, the cosine value is retrieved using `admt4000_get_cos`
-		*  and stored in the buffer. */
-		if (iio_admt4000->active_channels & NO_OS_BIT(ADMT4000_COSINE)) {
-			ret = admt4000_get_cos(admt4000, &buff[i]);
-			i++;
-		}
-
-		if (ret)
-			break;
-
-		/* If channel 5 is active, the sine value is retrieved using `admt4000_get_sin`
-		*  and stored in the buffer.*/
-		if (iio_admt4000->active_channels & NO_OS_BIT(ADMT4000_SINE)) {
-			ret = admt4000_get_sin(admt4000, &buff[i]);
-			i++;
-		}
-
-		if (ret)
-			break;
-
-	}
-
-	return samples;
-}
-
-/**
  * @brief Handles trigger: reads one data-set and writes it to the buffer.
  *
  * @param dev_data  - The iio device data structure.
@@ -1164,10 +1048,9 @@ static int admt4000_iio_trigger_handler(struct iio_device_data *dev_data)
 	struct admt4000_iio_dev *iio_admt4000;
 	struct admt4000_dev *admt4000;
 	bool is_one_shot, cnv;
-	uint16_t angles[2];
-	uint16_t data_buff[6];
 	int i = 0, ret;
-	uint8_t turns;
+	uint16_t angles[2];
+	int8_t turns;
 
 	if (!dev_data)
 		return -EINVAL;
@@ -1180,74 +1063,36 @@ static int admt4000_iio_trigger_handler(struct iio_device_data *dev_data)
 	if (ret)
 		return -EINVAL;
 
-	if (dev_data->buffer->active_mask & NO_OS_BIT(ADMT4000_TURN_COUNT)) {
+	if (dev_data->buffer->active_mask & NO_OS_BIT(ADMT4000_TURNS)) {
 		if (turns > ADMT4000_TURN_CNT_THRES)
 			turns = (int8_t) turns - ADMT4000_TURN_CNT_TWOS;
 
-		data_buff[i++] = (int16_t) turns;
+		iio_admt4000->data[i++] = (int16_t) turns;
 	}
 
-	if (dev_data->buffer->active_mask & NO_OS_BIT(ADMT4000_ANGLE_12BIT))
-		data_buff[i++] = (int16_t) angles[1];
+	if (dev_data->buffer->active_mask & NO_OS_BIT(ADMT4000_ANGLE))
+		iio_admt4000->data[i++] = (int16_t) angles[1];
 
 	if (dev_data->buffer->active_mask & NO_OS_BIT(ADMT4000_TEMP)) {
-		ret = admt4000_get_temp(admt4000, &data_buff[i], true);
+		ret = admt4000_get_temp(admt4000, &iio_admt4000->data[i], true);
 		i++;
 		if (ret)
 			return -EINVAL;
 	}
 
 	if (dev_data->buffer->active_mask & NO_OS_BIT(ADMT4000_COSINE)) {
-		ret = admt4000_get_cos(admt4000, &data_buff[i]);
+		ret = admt4000_get_cos(admt4000, &iio_admt4000->data[i]);
 		i++;
 		if (ret)
 			return -EINVAL;
 	}
 
 	if (dev_data->buffer->active_mask & NO_OS_BIT(ADMT4000_SINE)) {
-		ret = admt4000_get_sin(admt4000, &data_buff[i]);
+		ret = admt4000_get_sin(admt4000, &iio_admt4000->data[i]);
 		i++;
 		if (ret)
 			return -EINVAL;
 	}
 
-	return iio_buffer_push_scan(dev_data->buffer, &data_buff[0]);
-}
-
-/**
- * @brief function for reading samples from the device.
- * @param dev_data  - The iio device data structure.
- * @return the number of read samples.
- */
-int32_t admt4000_iio_submit_samples(struct iio_device_data *dev_data)
-{
-	if (!dev_data)
-		return -ENODEV;
-
-	return dev_data->buffer->size / dev_data->buffer->bytes_per_scan;
-}
-
-/**
-* @brief Updates the number of active channels and the total number of
- * 		  active channels
- *
- * @param dev  - The iio device structure.
- * @param mask - Mask of the active channels
- *
- * @return ret - Result of the updating procedure.
- */
-static int admt4000_iio_update_channels(void *dev, uint32_t mask)
-{
-	struct admt4000_iio_dev *iio_admt4000;
-
-	if (!dev)
-		return -EINVAL;
-
-	iio_admt4000 = (struct admt4000_iio_dev *) dev;
-
-	iio_admt4000->active_channels = mask;
-
-	iio_admt4000->no_of_active_channels = no_os_hweight32(mask);
-
-	return 0;
+	return iio_buffer_push_scan(dev_data->buffer, &iio_admt4000->data[0]);
 }

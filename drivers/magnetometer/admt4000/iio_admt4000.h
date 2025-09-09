@@ -42,12 +42,12 @@
  *  @brief ADMT4000 IIO channels enumeration
  */
 enum admt4000_iio_chan_type {
-	ADMT4000_TURN_COUNT,
-	ADMT4000_ANGLE_10BIT,
-	ADMT4000_ANGLE_12BIT,
+	ADMT4000_TURNS,
+	ADMT4000_ANGLE,
 	ADMT4000_TEMP,
 	ADMT4000_COSINE,
 	ADMT4000_SINE,
+	ADMT4000_NUM_CHAN,
 };
 
 /** @enum admt4000_iio_harmonics_corr_type
@@ -69,7 +69,7 @@ struct admt4000_iio_dev {
 	struct iio_device *iio_dev;
 	uint32_t active_channels;
 	uint8_t no_of_active_channels;
-	uint16_t data[12];
+	uint16_t data[5];
 	struct iio_hw_trig *hw_trig_desc;
 };
 
