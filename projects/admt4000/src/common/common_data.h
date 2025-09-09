@@ -53,7 +53,7 @@ extern struct no_os_uart_init_param admt4000_uart_ip;
 extern struct admt4000_init_param admt4000_ip;
 extern struct no_os_gpio_init_param spi_sel_b_ip;
 extern struct no_os_spi_init_param spi_sel_b_spi_ip;
-
+extern struct no_os_spi_init_param spi_tmc_spi_ip;
 #if (TMC)
 extern struct tmc5240_init_param tmc5240_ip;
 #endif

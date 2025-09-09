@@ -42,13 +42,13 @@
 #endif
 
 #define DATA_BUFFER_SIZE 400
-uint8_t iio_data_buffer[DATA_BUFFER_SIZE * 6 * sizeof(int32_t)];
+uint8_t iio_data_buffer[DATA_BUFFER_SIZE * 5 * sizeof(uint32_t)];
 
 #define ADMT4000_GPIO_TRIG_NAME "admt4000-dev0"
 
 /* GPIO trigger */
 struct no_os_irq_init_param admt4000_gpio_irq_ip = {
-	.irq_ctrl_id = IRQ_INT_ID,
+	.irq_ctrl_id = GPIO_IRQ_ID,
 	.platform_ops = GPIO_IRQ_OPS,
 	.extra = GPIO_IRQ_EXTRA,
 };
@@ -76,7 +76,7 @@ int example_main()
 
 	struct iio_data_buffer data_buff = {
 		.buff = (void *)iio_data_buffer,
-		.size = DATA_BUFFER_SIZE * 6 * sizeof(int32_t)
+		.size = DATA_BUFFER_SIZE * 5 * sizeof(uint16_t)
 	};
 
 #ifdef TMC
@@ -105,10 +105,17 @@ int example_main()
 	if (ret)
 		return ret;
 
+	ret = no_os_irq_set_priority(admt4000_irq_desc, admt4000_gpio_trig_ip.irq_id,
+				     7);
+	if (ret)
+		return ret;
+
 	admt4000_gpio_trig_ip.irq_ctrl = admt4000_irq_desc;
 
 	/* Initialize hardware trigger */
 	ret = iio_hw_trig_init(&admt4000_trig_desc, &admt4000_gpio_trig_ip);
+	if (ret)
+		return ret;
 
 	/** Declaring iio_devices structure */
 	struct iio_app_device iio_devices[] = {

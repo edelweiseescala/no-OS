@@ -68,6 +68,7 @@
 #define SPI_OPS			&mbed_spi_ops
 #define SPI_EXTRA		&spi_extra_ip
 #define SPI_SEL_EXTRA		&spi_sel_b_extra_ip
+#define SPI_TMC_EXTRA		&spi_tmc_extra_ip
 
 #define GPIO_SPI_SEL_PORT	0
 #define GPIO_SPI_SEL_PIN	ARDUINO_UNO_D8
@@ -81,13 +82,13 @@
 #define GPIO_ACALC_PORT		0
 #define GPIO_ACALC		ARDUINO_UNO_D6
 
-#define IRQ_INT_ID		GPIO_IRQ_ID1
+#define GPIO_IRQ_ID             10
 #define GPIO_IRQ_OPS		&mbed_gpio_irq_ops
-#define GPIO_IRQ_EXTRA		&mbed_trigger_gpio_irq_ip
+#define GPIO_IRQ_EXTRA		&trigger_gpio_irq_ip
 #define GPIO_IRQ_INTR_PRIORITY	EXTI15_10_IRQn
 
 #define ADMT4000_GPIO_CB_HANDLE		NULL /* Not used in Mbed platform */
-#define ADMT4000_GPIO_TRIG_IRQ_ID	0 /* Not used in Mbed platform */
+#define ADMT4000_GPIO_TRIG_IRQ_ID	GPIO_IRQ_ID1
 
 #if (TMC)
 #define TMC_CS_PORT             0
@@ -97,7 +98,8 @@
 extern struct mbed_uart_init_param uart_extra_ip;
 extern struct mbed_spi_init_param spi_extra_ip;
 extern struct mbed_spi_init_param spi_sel_b_extra_ip;
+extern struct mbed_spi_init_param spi_tmc_extra_ip;
 extern struct mbed_gpio_init_param gpio_extra_ip;
-extern struct mbed_gpio_irq_init_param mbed_trigger_gpio_irq_ip;
+extern struct mbed_gpio_irq_init_param trigger_gpio_irq_ip;
 
 #endif /* __PARAMETERS_H__ */

@@ -40,7 +40,7 @@
 /******************************************************************************/
 /***************************** Include Files **********************************/
 /******************************************************************************/
-
+#ifdef TMC
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -660,3 +660,4 @@ static int tmc5240_iio_show_ramp_mode_avail(void *dev, char *buf, uint32_t len,
 	return length;
 }
 
+#endif

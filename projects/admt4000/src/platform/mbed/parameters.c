@@ -53,11 +53,18 @@ struct mbed_spi_init_param spi_sel_b_extra_ip = {
 	.use_sw_csb = true,
 };
 
+struct mbed_spi_init_param spi_tmc_extra_ip = {
+	.spi_miso_pin = SPI_MISO,
+	.spi_mosi_pin = SPI_MOSI,
+	.spi_clk_pin = SPI_SCK,
+	.use_sw_csb = true,
+};
+
 struct mbed_gpio_init_param gpio_extra_ip = {
 	.pin_mode = 1,
 };
 
 /* GPIO interrupt Mbed platform specific parameters */
-struct mbed_gpio_irq_init_param mbed_trigger_gpio_irq_ip = {
+struct mbed_gpio_irq_init_param trigger_gpio_irq_ip = {
 	.gpio_irq_pin = GPIO_ACALC,
 };

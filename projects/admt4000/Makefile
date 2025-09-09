@@ -1,6 +1,6 @@
 TMC_ENABLED ?= y
 
-PLATFORM ?= mbed
+PLATFORM ?= stm32
 
 EXAMPLE ?= iio_example
 

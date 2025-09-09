@@ -123,7 +123,7 @@ const struct no_os_spi_init_param tmc_spi_ip = {
 	.mode = NO_OS_SPI_MODE_3,
 	.bit_order = NO_OS_SPI_BIT_ORDER_MSB_FIRST,
 	.platform_ops = SPI_OPS,
-	.extra = SPI_EXTRA,
+	.extra = SPI_TMC_EXTRA,
 };
 
 struct tmc5240_init_param tmc5240_ip = {
