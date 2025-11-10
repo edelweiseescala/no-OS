@@ -1,0 +1,1768 @@
+name: CI Enhanced with Metrics
+
+on:
+  push:
+    branches:
+      - main
+      - staging/*
+      - next_stable
+      - dev/*
+      - '20*'
+  pull_request:
+    branches:
+      - main
+      - next_stable
+      - '20*'
+
+env:
+  NUM_JOBS: 4
+  # Set to 'true' to fail Static Analysis job when warnings/style/performance issues are found
+  # Set to 'false' to only fail on errors (warnings become informational)
+  STATIC_ANALYSIS_STRICT: 'false'
+
+jobs:
+  # Code style checking with astyle
+  astyle:
+    name: Code Style Check
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 50
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    - name: Fetch target branch
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          git fetch --depth=50 origin ${{ github.event.pull_request.base.ref }}
+        else
+          git fetch --depth=50 origin main
+        fi
+
+    - name: Install astyle
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y astyle
+
+    - name: Set environment variables
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          echo "TARGET_BRANCH=${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
+        else
+          echo "TARGET_BRANCH=main" >> $GITHUB_ENV
+        fi
+        echo "BUILD_TYPE=astyle" >> $GITHUB_ENV
+
+    - name: Run astyle check
+      run: |
+        # Capture astyle output and git state
+        echo "=== Running astyle check ===" > astyle_output.txt
+
+        # Count source files before running astyle
+        TOTAL_SOURCE_FILES=$(find . -name "*.c" -o -name "*.h" 2>/dev/null | grep -v ".git" | grep -v "build/" | wc -l)
+        echo "Total source files found: $TOTAL_SOURCE_FILES" >> astyle_output.txt
+
+        # Run astyle and capture detailed output
+        set -o pipefail
+        if ./ci/run_build.sh 2>&1 | tee -a astyle_output.txt; then
+          echo "astyle_failed=false" >> $GITHUB_ENV
+          echo "Astyle check PASSED" >> astyle_output.txt
+        else
+          echo "astyle_failed=true" >> $GITHUB_ENV
+          echo "Astyle check FAILED" >> astyle_output.txt
+        fi
+
+        # Check for files that were modified by astyle
+        MODIFIED_FILES=$(git diff --name-only 2>/dev/null | grep -E "\.(c|h)$" | wc -l || echo "0")
+        echo "Files modified by astyle: $MODIFIED_FILES" >> astyle_output.txt
+
+        # Show some example changes if any
+        if [ "$MODIFIED_FILES" -gt 0 ]; then
+          echo "=== Modified files ===" >> astyle_output.txt
+          git diff --name-only | grep -E "\.(c|h)$" >> astyle_output.txt 2>/dev/null || true
+        fi
+
+    - name: Parse astyle results
+      run: |
+        # Parse astyle results from our detailed output
+        if [ -f "astyle_output.txt" ]; then
+          # Get total source files
+          TOTAL_FILES=$(grep "Total source files found:" astyle_output.txt | grep -o '[0-9]*' || echo "0")
+
+          # Get files modified by astyle
+          FILES_WITH_ISSUES=$(grep "Files modified by astyle:" astyle_output.txt | grep -o '[0-9]*' || echo "0")
+
+          # Fallback: count source files if not captured
+          if [ "$TOTAL_FILES" = "0" ] || [ -z "$TOTAL_FILES" ]; then
+            TOTAL_FILES=$(find . -name "*.c" -o -name "*.h" 2>/dev/null | grep -v ".git" | grep -v "build/" | wc -l || echo "0")
+          fi
+
+          # Fallback: check git diff directly
+          if [ "$FILES_WITH_ISSUES" = "0" ] || [ -z "$FILES_WITH_ISSUES" ]; then
+            FILES_WITH_ISSUES=$(git diff --name-only 2>/dev/null | grep -E "\.(c|h)$" | wc -l || echo "0")
+          fi
+        else
+          # If no output file, count files manually
+          TOTAL_FILES=$(find . -name "*.c" -o -name "*.h" 2>/dev/null | grep -v ".git" | grep -v "build/" | wc -l || echo "0")
+          FILES_WITH_ISSUES=$(git diff --name-only 2>/dev/null | grep -E "\.(c|h)$" | wc -l || echo "0")
+        fi
+
+        # Clean the variables
+        TOTAL_FILES=$(echo "$TOTAL_FILES" | tr -d '\n\r' | grep -o '^[0-9]*$' || echo "0")
+        FILES_WITH_ISSUES=$(echo "$FILES_WITH_ISSUES" | tr -d '\n\r' | grep -o '^[0-9]*$' || echo "0")
+
+        # Ensure valid numbers
+        TOTAL_FILES=${TOTAL_FILES:-0}
+        FILES_WITH_ISSUES=${FILES_WITH_ISSUES:-0}
+
+        # Validate numbers are reasonable
+        if [ "$TOTAL_FILES" -lt 0 ] || [ "$TOTAL_FILES" -gt 100000 ]; then
+          TOTAL_FILES=0
+        fi
+        if [ "$FILES_WITH_ISSUES" -lt 0 ] || [ "$FILES_WITH_ISSUES" -gt "$TOTAL_FILES" ]; then
+          FILES_WITH_ISSUES=0
+        fi
+
+        # Calculate files OK
+        FILES_OK=$((TOTAL_FILES - FILES_WITH_ISSUES))
+
+        echo "TOTAL_FILES=$TOTAL_FILES" >> $GITHUB_ENV
+        echo "FILES_WITH_ISSUES=$FILES_WITH_ISSUES" >> $GITHUB_ENV
+        echo "FILES_OK=$FILES_OK" >> $GITHUB_ENV
+
+        # Debug output
+        echo "Debug: TOTAL_FILES=$TOTAL_FILES, FILES_WITH_ISSUES=$FILES_WITH_ISSUES, FILES_OK=$FILES_OK"
+
+    - name: Create Job Summary
+      if: always()
+      run: |
+        # Calculate compliance rate safely
+        TOTAL_FILES="${{ env.TOTAL_FILES }}"
+        FILES_OK="${{ env.FILES_OK }}"
+        if [ "${TOTAL_FILES:-0}" -eq 0 ]; then
+          COMPLIANCE_RATE="N/A"
+        else
+          COMPLIANCE_RATE=$(( FILES_OK * 100 / TOTAL_FILES ))
+        fi
+
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## 🎨 Code Style Check Results
+
+        | Metric | Value |
+        |--------|-------|
+        | 📁 Total Files Checked | ${{ env.TOTAL_FILES }} |
+        | ✅ Files Compliant | ${{ env.FILES_OK }} |
+        | ❌ Files with Issues | ${{ env.FILES_WITH_ISSUES }} |
+        | 📊 Compliance Rate | ${COMPLIANCE_RATE}% |
+
+        ### Status: ${{ env.astyle_failed == 'true' && '❌ Failed' || '✅ Passed' }}
+
+        > 💡 **Tip**: Click the heading above to view the workflow run page
+        EOF
+
+    - name: Fail job if style issues found
+      run: |
+        if [ "${{ env.astyle_failed }}" = "true" ]; then
+          echo "❌ Code style check failed - files need formatting"
+          echo "Run 'astyle --style=linux --indent=tab --max-code-length=80 --break-blocks --pad-oper --pad-header --unpad-paren --align-pointer=name --break-one-line-headers --convert-tabs --mode=c --recursive *.c,*.h' to fix formatting issues"
+          exit 1
+        else
+          echo "✅ All files pass code style requirements"
+        fi
+
+  # Static analysis with cppcheck
+  cppcheck:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    outputs:
+      total_issues: ${{ env.CPPCHECK_TOTAL }}
+      has_errors: ${{ env.CPPCHECK_ERRORS }}
+      has_warnings: ${{ env.CPPCHECK_WARNINGS }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 50
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    - name: Fetch target branch
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          git fetch --depth=50 origin ${{ github.event.pull_request.base.ref }}
+        else
+          git fetch --depth=50 origin main
+        fi
+
+    - name: Install cppcheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cppcheck
+
+    - name: Set environment variables
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          echo "TARGET_BRANCH=${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
+        else
+          echo "TARGET_BRANCH=main" >> $GITHUB_ENV
+        fi
+        echo "BUILD_TYPE=cppcheck" >> $GITHUB_ENV
+
+    - name: Run cppcheck analysis
+      run: |
+        set -o pipefail
+
+        # Run cppcheck and capture the exit code
+        if ./ci/run_build.sh 2>&1 | tee cppcheck_output.txt; then
+          echo "cppcheck_completed=true" >> $GITHUB_ENV
+          echo "cppcheck_failed=false" >> $GITHUB_ENV
+        else
+          EXIT_CODE=$?
+          echo "cppcheck_completed=true" >> $GITHUB_ENV
+          # Only mark as failed if it's a real failure (not just finding issues)
+          # cppcheck exits with code 1 when issues are found, which is normal
+          if [ $EXIT_CODE -gt 1 ]; then
+            echo "cppcheck_failed=true" >> $GITHUB_ENV
+          else
+            echo "cppcheck_failed=false" >> $GITHUB_ENV
+          fi
+        fi
+
+    - name: Parse cppcheck results
+      run: |
+        # Parse different types of issues with safe parsing
+        if [ -f "cppcheck_output.txt" ]; then
+          ERRORS=$(grep -c ": error:" cppcheck_output.txt 2>/dev/null || echo "0")
+          WARNINGS=$(grep -c ": warning:" cppcheck_output.txt 2>/dev/null || echo "0")
+          STYLE=$(grep -c ": style:" cppcheck_output.txt 2>/dev/null || echo "0")
+          PERFORMANCE=$(grep -c ": performance:" cppcheck_output.txt 2>/dev/null || echo "0")
+        else
+          ERRORS="0"
+          WARNINGS="0"
+          STYLE="0"
+          PERFORMANCE="0"
+        fi
+
+        # Clean the variables of any whitespace/newlines
+        ERRORS=$(echo "$ERRORS" | tr -d '\n\r' | grep -o '^[0-9]*$' || echo "0")
+        WARNINGS=$(echo "$WARNINGS" | tr -d '\n\r' | grep -o '^[0-9]*$' || echo "0")
+        STYLE=$(echo "$STYLE" | tr -d '\n\r' | grep -o '^[0-9]*$' || echo "0")
+        PERFORMANCE=$(echo "$PERFORMANCE" | tr -d '\n\r' | grep -o '^[0-9]*$' || echo "0")
+
+        # Ensure we have valid numbers
+        ERRORS=${ERRORS:-0}
+        WARNINGS=${WARNINGS:-0}
+        STYLE=${STYLE:-0}
+        PERFORMANCE=${PERFORMANCE:-0}
+
+        # Validate numbers are reasonable
+        if [ "$ERRORS" -lt 0 ] || [ "$ERRORS" -gt 10000 ]; then
+          ERRORS=0
+        fi
+        if [ "$WARNINGS" -lt 0 ] || [ "$WARNINGS" -gt 10000 ]; then
+          WARNINGS=0
+        fi
+        if [ "$STYLE" -lt 0 ] || [ "$STYLE" -gt 10000 ]; then
+          STYLE=0
+        fi
+        if [ "$PERFORMANCE" -lt 0 ] || [ "$PERFORMANCE" -gt 10000 ]; then
+          PERFORMANCE=0
+        fi
+
+        # Calculate total safely
+        TOTAL_ISSUES=$((ERRORS + WARNINGS + STYLE + PERFORMANCE))
+
+        echo "CPPCHECK_ERRORS=$ERRORS" >> $GITHUB_ENV
+        echo "CPPCHECK_WARNINGS=$WARNINGS" >> $GITHUB_ENV
+        echo "CPPCHECK_STYLE=$STYLE" >> $GITHUB_ENV
+        echo "CPPCHECK_PERFORMANCE=$PERFORMANCE" >> $GITHUB_ENV
+        echo "CPPCHECK_TOTAL=$TOTAL_ISSUES" >> $GITHUB_ENV
+
+        # Debug output
+        echo "Debug: ERRORS=$ERRORS, WARNINGS=$WARNINGS, STYLE=$STYLE, PERFORMANCE=$PERFORMANCE, TOTAL=$TOTAL_ISSUES"
+
+    - name: Create Job Summary
+      if: always()
+      run: |
+        # Calculate status message
+        # Convert string values to numbers for comparison
+        ERRORS=$((0 + ${{ env.CPPCHECK_ERRORS }}))
+        TOTAL=$((0 + ${{ env.CPPCHECK_TOTAL }}))
+
+        # Determine status based on results
+        if [ "${{ env.cppcheck_failed }}" = "true" ]; then
+          STATUS_MSG="❌ Failed"
+        elif [ $ERRORS -gt 0 ]; then
+          STATUS_MSG="⚠️ Has Errors"
+        elif [ $TOTAL -gt 0 ]; then
+          STATUS_MSG="⚠️ Has Warnings"
+        else
+          STATUS_MSG="✅ Passed"
+        fi
+
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## 🔍 Static Analysis Results
+
+        | Issue Type | Count |
+        |------------|-------|
+        | 🚨 Errors | ${{ env.CPPCHECK_ERRORS }} |
+        | ⚠️ Warnings | ${{ env.CPPCHECK_WARNINGS }} |
+        | 🎯 Style Issues | ${{ env.CPPCHECK_STYLE }} |
+        | ⚡ Performance Issues | ${{ env.CPPCHECK_PERFORMANCE }} |
+        | **📊 Total Issues** | **${{ env.CPPCHECK_TOTAL }}** |
+
+        ### Status: ${STATUS_MSG}
+
+        > 💡 **Tip**: Click the heading above to view the workflow run page
+        EOF
+
+        # Add issue breakdown if there are issues
+        if [ $TOTAL -gt 0 ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### 📋 Issue Breakdown" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Errors**: High priority issues that should be fixed immediately" >> $GITHUB_STEP_SUMMARY
+          echo "- **Warnings**: Potential problems worth investigating" >> $GITHUB_STEP_SUMMARY
+          echo "- **Style**: Code style improvements for better readability" >> $GITHUB_STEP_SUMMARY
+          echo "- **Performance**: Optimization suggestions for better efficiency" >> $GITHUB_STEP_SUMMARY
+
+          # Show actual issues if cppcheck output exists
+          WARNINGS=$((0 + ${{ env.CPPCHECK_WARNINGS }}))
+          if [ -f "cppcheck_output.txt" ] && [ $WARNINGS -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### ⚠️ Warning Details" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            grep ": warning:" cppcheck_output.txt | head -10 >> $GITHUB_STEP_SUMMARY 2>/dev/null || \
+              echo "Warning details not available" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ -f "cppcheck_output.txt" ] && [ $ERRORS -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### 🚨 Error Details" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            grep ": error:" cppcheck_output.txt | head -10 >> $GITHUB_STEP_SUMMARY 2>/dev/null || \
+              echo "Error details not available" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🎉 **No issues found!** Your code passes all static analysis checks." >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Fail job if issues found
+      run: |
+        echo "Static Analysis Mode: ${{ env.STATIC_ANALYSIS_STRICT == 'true' && 'STRICT' || 'LENIENT' }}"
+        echo "Issues found - Errors: ${{ env.CPPCHECK_ERRORS }}, Warnings: ${{ env.CPPCHECK_WARNINGS }}, Style: ${{ env.CPPCHECK_STYLE }}, Performance: ${{ env.CPPCHECK_PERFORMANCE }}"
+
+        # Convert string values to numbers for comparison
+        ERRORS=$((0 + ${{ env.CPPCHECK_ERRORS }}))
+        TOTAL=$((0 + ${{ env.CPPCHECK_TOTAL }}))
+
+        if [ "${{ env.STATIC_ANALYSIS_STRICT }}" = "true" ]; then
+          # Strict mode: fail on any issues (errors, warnings, style, performance)
+          if [ $TOTAL -gt 0 ]; then
+            echo "❌ STRICT MODE: Static analysis found $TOTAL issues that need to be addressed."
+            echo "Set STATIC_ANALYSIS_STRICT=false to make warnings/style/performance issues non-blocking."
+            exit 1
+          else
+            echo "✅ STRICT MODE: No static analysis issues found."
+          fi
+        else
+          # Lenient mode: only fail on errors (warnings/style/performance are informational)
+          if [ $ERRORS -gt 0 ]; then
+            echo "❌ LENIENT MODE: Static analysis found $ERRORS errors that must be fixed."
+            exit 1
+          else
+            echo "✅ LENIENT MODE: No errors found. Warnings/style/performance issues are informational."
+            if [ $TOTAL -gt 0 ]; then
+              echo "ℹ️  Found $TOTAL non-blocking issues (warnings/style/performance)."
+            fi
+          fi
+        fi
+
+  # Build drivers with metrics
+  drivers:
+    name: Build Drivers
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 50
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc-arm-none-eabi
+
+    - name: Set environment variables
+      run: |
+        echo "BUILD_TYPE=drivers" >> $GITHUB_ENV
+
+    - name: Build drivers with metrics
+      run: |
+        START_TIME=$(date +%s)
+
+        # Capture build output with detailed logging
+        echo "=== Starting drivers build ===" > build_output.txt
+        echo "Build started at: $(date)" >> build_output.txt
+
+        # Count actual driver source files that will be compiled
+        # Use the same logic as the drivers Makefile
+        cd drivers
+        SKIPDIR="-path ./platform -prune -o -path ./axi_core -prune -o -path ./rf-transceiver/navassa -prune -o -path ./adc/ad9081 -prune -o -path ./rf-transceiver/madura -prune -o -path ./net/oa_tc6 -prune -o"
+        TOTAL_DRIVERS=$(find . $SKIPDIR -name '*.c' -print | wc -l || echo "0")
+        cd ..
+
+        echo "Total driver files to compile: $TOTAL_DRIVERS" >> build_output.txt
+        echo "This matches the drivers/Makefile SRCS variable" >> build_output.txt
+
+        # Run the build and capture result
+        set -o pipefail
+        if ./ci/run_build.sh 2>&1 | tee -a build_output.txt; then
+          BUILD_RESULT=0
+          echo "BUILD_STATUS=SUCCESS" >> build_output.txt
+          echo "All driver compilation completed successfully" >> build_output.txt
+        else
+          BUILD_RESULT=1
+          echo "BUILD_STATUS=FAILED" >> build_output.txt
+          echo "Driver compilation failed with errors" >> build_output.txt
+        fi
+
+        END_TIME=$(date +%s)
+        BUILD_TIME=$((END_TIME - START_TIME))
+
+        echo "Build completed at: $(date)" >> build_output.txt
+        echo "Total build time: ${BUILD_TIME}s" >> build_output.txt
+        echo "Driver files processed: $TOTAL_DRIVERS" >> build_output.txt
+
+        echo "BUILD_TIME=$BUILD_TIME" >> $GITHUB_ENV
+        echo "BUILD_RESULT=$BUILD_RESULT" >> $GITHUB_ENV
+
+    - name: Parse build results
+      run: |
+        # Parse build results from our detailed output
+        if [ -f "build_output.txt" ]; then
+          # Get total driver files that were compiled
+          TOTAL_DRIVERS=$(grep "Total driver files to compile:" build_output.txt | grep -o '[0-9]*' || echo "0")
+
+          # Get build status
+          BUILD_STATUS=$(grep "BUILD_STATUS=" build_output.txt | cut -d'=' -f2 || echo "UNKNOWN")
+
+          # Determine successful vs failed builds based on overall result
+          if [ "$BUILD_STATUS" = "SUCCESS" ] || [ "${{ env.BUILD_RESULT }}" = "0" ]; then
+            SUCCESSFUL_BUILDS="$TOTAL_DRIVERS"
+            FAILED_BUILDS="0"
+          elif [ "$BUILD_STATUS" = "FAILED" ] || [ "${{ env.BUILD_RESULT }}" != "0" ]; then
+            SUCCESSFUL_BUILDS="0"
+            FAILED_BUILDS="$TOTAL_DRIVERS"
+          else
+            # Unknown status - be conservative
+            SUCCESSFUL_BUILDS="0"
+            FAILED_BUILDS="0"
+          fi
+
+          # Fallback: count driver files if not captured
+          if [ "$TOTAL_DRIVERS" = "0" ] || [ -z "$TOTAL_DRIVERS" ]; then
+            cd drivers 2>/dev/null || cd .
+            SKIPDIR="-path ./platform -prune -o -path ./axi_core -prune -o -path ./rf-transceiver/navassa -prune -o -path ./adc/ad9081 -prune -o -path ./rf-transceiver/madura -prune -o -path ./net/oa_tc6 -prune -o"
+            TOTAL_DRIVERS=$(find . $SKIPDIR -name '*.c' -print 2>/dev/null | wc -l || echo "0")
+            cd .. 2>/dev/null || true
+          fi
+        else
+          # If no output file, count driver files manually
+          cd drivers 2>/dev/null || cd .
+          SKIPDIR="-path ./platform -prune -o -path ./axi_core -prune -o -path ./rf-transceiver/navassa -prune -o -path ./adc/ad9081 -prune -o -path ./rf-transceiver/madura -prune -o -path ./net/oa_tc6 -prune -o"
+          TOTAL_DRIVERS=$(find . $SKIPDIR -name '*.c' -print 2>/dev/null | wc -l || echo "0")
+          cd .. 2>/dev/null || true
+
+          # Use build result from environment
+          if [ "${{ env.BUILD_RESULT }}" = "0" ]; then
+            SUCCESSFUL_BUILDS="$TOTAL_DRIVERS"
+            FAILED_BUILDS="0"
+          else
+            SUCCESSFUL_BUILDS="0"
+            FAILED_BUILDS="$TOTAL_DRIVERS"
+          fi
+        fi
+
+        # Clean the variables
+        TOTAL_DRIVERS=$(echo "$TOTAL_DRIVERS" | tr -d '\n\r' | grep -o '^[0-9]*$' || echo "0")
+        SUCCESSFUL_BUILDS=$(echo "$SUCCESSFUL_BUILDS" | tr -d '\n\r' | grep -o '^[0-9]*$' || echo "0")
+        FAILED_BUILDS=$(echo "$FAILED_BUILDS" | tr -d '\n\r' | grep -o '^[0-9]*$' || echo "0")
+
+        # Ensure valid numbers
+        TOTAL_DRIVERS=${TOTAL_DRIVERS:-0}
+        SUCCESSFUL_BUILDS=${SUCCESSFUL_BUILDS:-0}
+        FAILED_BUILDS=${FAILED_BUILDS:-0}
+
+        # Validate numbers are reasonable
+        if [ "$TOTAL_DRIVERS" -lt 0 ] || [ "$TOTAL_DRIVERS" -gt 1000 ]; then
+          TOTAL_DRIVERS=0
+        fi
+        if [ "$SUCCESSFUL_BUILDS" -lt 0 ] || [ "$SUCCESSFUL_BUILDS" -gt "$TOTAL_DRIVERS" ]; then
+          SUCCESSFUL_BUILDS=0
+        fi
+        if [ "$FAILED_BUILDS" -lt 0 ] || [ "$FAILED_BUILDS" -gt "$TOTAL_DRIVERS" ]; then
+          FAILED_BUILDS=0
+        fi
+
+        echo "SUCCESSFUL_BUILDS=$SUCCESSFUL_BUILDS" >> $GITHUB_ENV
+        echo "FAILED_BUILDS=$FAILED_BUILDS" >> $GITHUB_ENV
+        echo "TOTAL_DRIVERS=$TOTAL_DRIVERS" >> $GITHUB_ENV
+
+        # Debug output
+        echo "Debug: TOTAL_DRIVERS=$TOTAL_DRIVERS, SUCCESSFUL_BUILDS=$SUCCESSFUL_BUILDS, FAILED_BUILDS=$FAILED_BUILDS, BUILD_STATUS=$BUILD_STATUS"
+
+    - name: Create Job Summary
+      if: always()
+      run: |
+        # Calculate success rate safely
+        TOTAL_DRIVERS="${{ env.TOTAL_DRIVERS }}"
+        SUCCESSFUL_BUILDS="${{ env.SUCCESSFUL_BUILDS }}"
+        if [ "${TOTAL_DRIVERS:-0}" -eq 0 ]; then
+          SUCCESS_RATE="N/A"
+        else
+          SUCCESS_RATE=$(( SUCCESSFUL_BUILDS * 100 / TOTAL_DRIVERS ))
+        fi
+
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## 🔨 Drivers Build Results
+
+        ### 📊 Build Metrics
+        | Metric | Value |
+        |--------|-------|
+        | ⏱️ Build Time | ${{ env.BUILD_TIME }}s |
+        | 🎯 Total Driver Files | ${{ env.TOTAL_DRIVERS }} |
+        | ✅ Successfully Compiled | ${{ env.SUCCESSFUL_BUILDS }} |
+        | ❌ Failed to Compile | ${{ env.FAILED_BUILDS }} |
+        | 📈 Success Rate | ${SUCCESS_RATE}% |
+
+        ### Status: ${{ env.BUILD_RESULT == '0' && '✅ All Drivers Compiled Successfully' || '❌ Driver Compilation Failed' }}
+
+        ${{ env.BUILD_TIME > 300 && '⚠️ **Build time exceeded 5 minutes. Consider optimization.**' || '' }}
+
+        > 💡 **Note**: This builds reusable driver components (${TOTAL_DRIVERS} .c files), not the 134 application projects in the \`projects/\` directory.
+        EOF
+
+    - name: Fail job if driver compilation failed
+      run: |
+        if [ "${{ env.BUILD_RESULT }}" != "0" ]; then
+          echo "❌ Driver compilation failed with ${{ env.FAILED_BUILDS }} failures out of ${{ env.TOTAL_DRIVERS }} drivers"
+          echo "Check the build logs above for specific compilation errors"
+          echo "Fix compilation errors before merging"
+          exit 1
+        else
+          echo "✅ All ${{ env.SUCCESSFUL_BUILDS }} drivers compiled successfully"
+        fi
+
+  # Unit tests with coverage metrics
+  unit-tests:
+    name: Unit Tests & Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 50
+
+    - name: Setup Ruby
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: '3.0'
+        bundler-cache: false
+
+    - name: Install Ceedling and dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc lcov python3-pip
+        pip3 install gcovr lxml
+        gem install ceedling
+
+    - name: Run unit tests and generate coverage
+      run: |
+        set -e
+
+        # Initialize counters
+        TOTAL_TESTS=0
+        PASSED_TESTS=0
+        FAILED_TESTS=0
+        TEST_DIRS_COUNT=0
+
+        # Coverage tracking
+        declare -A COVERAGE_DATA
+        OVERALL_LINE_COV=0
+        OVERALL_BRANCH_COV=0
+        OVERALL_FUNC_COV=0
+
+        # Create detailed test results file
+        echo "=== Unit Test Results ===" > test_results.txt
+        echo "Run started at: $(date)" >> test_results.txt
+        echo "" >> test_results.txt
+
+        # Find all test directories containing project.yml files
+        test_dirs=$(find tests -name "project.yml" -type f -exec dirname {} \;)
+
+        if [ -z "$test_dirs" ]; then
+          echo "No test directories found with project.yml files"
+          exit 1
+        fi
+
+        for test_dir in $test_dirs; do
+          echo "=== Running tests in: $test_dir ===" >> test_results.txt
+          echo "Running tests in: $test_dir"
+          cd "$test_dir"
+
+          # Run tests with coverage
+          if ceedling gcov:all 2>&1 | tee -a test_output.txt; then
+            echo "✅ Test suite completed successfully" >> ../../../test_results.txt
+          else
+            echo "❌ Test suite encountered errors" >> ../../../test_results.txt
+          fi
+
+          # Parse test results from Ceedling output
+          DIR_TESTS=$(grep "^TESTED:" test_output.txt 2>/dev/null | tail -1 | grep -o '[0-9]\+' || echo "0")
+          DIR_PASSED=$(grep "^PASSED:" test_output.txt 2>/dev/null | tail -1 | grep -o '[0-9]\+' || echo "0")
+          DIR_FAILED=$(grep "^FAILED:" test_output.txt 2>/dev/null | tail -1 | grep -o '[0-9]\+' || echo "0")
+
+          # Parse coverage data from console output
+          # Extract line coverage percentages
+          LINE_COV=$(grep -E "Lines executed:[0-9.]+%" test_output.txt | sed 's/.*Lines executed:\([0-9.]\+\)%.*/\1/' | head -1 || echo "0")
+          BRANCH_COV=$(grep -E "Branches executed:[0-9.]+%" test_output.txt | sed 's/.*Branches executed:\([0-9.]\+\)%.*/\1/' | head -1 || echo "0")
+
+          # Parse HTML coverage report if available
+          if [ -f "build/artifacts/gcov/gcovr/GcovCoverageResults.html" ]; then
+            # Extract overall coverage from HTML
+            HTML_LINE_COV=$(grep -o 'class="coverage-[^"]*">[0-9.]\+%' build/artifacts/gcov/gcovr/GcovCoverageResults.html | grep -o '[0-9.]\+' | head -1 || echo "0")
+            if [ -n "$HTML_LINE_COV" ] && [ "$HTML_LINE_COV" != "0" ]; then
+              LINE_COV=$HTML_LINE_COV
+            fi
+          fi
+
+          # Store coverage data
+          COVERAGE_DATA["$test_dir"]="$LINE_COV"
+
+          # Validate the numbers
+          DIR_TESTS=${DIR_TESTS:-0}
+          DIR_PASSED=${DIR_PASSED:-0}
+          DIR_FAILED=${DIR_FAILED:-0}
+          LINE_COV=${LINE_COV:-0}
+
+          # Capture failed test names
+          if [ "$DIR_FAILED" -gt 0 ]; then
+            echo "❌ Failed tests in $test_dir:" >> ../../../test_results.txt
+            grep -A 5 -B 2 "FAIL\|ERROR" test_output.txt | head -20 >> ../../../test_results.txt 2>/dev/null || \
+              echo "  (Failed test details not available)" >> ../../../test_results.txt
+            echo "" >> ../../../test_results.txt
+          else
+            echo "✅ All tests passed in $test_dir" >> ../../../test_results.txt
+          fi
+
+          # Add coverage info to results
+          echo "📊 Coverage: ${LINE_COV}% lines" >> ../../../test_results.txt
+          echo "Total tests in $test_dir: $DIR_TESTS (Passed: $DIR_PASSED, Failed: $DIR_FAILED)" >> ../../../test_results.txt
+          echo "" >> ../../../test_results.txt
+
+          TOTAL_TESTS=$((TOTAL_TESTS + DIR_TESTS))
+          PASSED_TESTS=$((PASSED_TESTS + DIR_PASSED))
+          FAILED_TESTS=$((FAILED_TESTS + DIR_FAILED))
+          TEST_DIRS_COUNT=$((TEST_DIRS_COUNT + 1))
+
+          # Accumulate coverage (simple average for now)
+          OVERALL_LINE_COV=$(echo "$OVERALL_LINE_COV + $LINE_COV" | bc -l 2>/dev/null || echo "$OVERALL_LINE_COV")
+
+          cd - > /dev/null
+        done
+
+        # Calculate average coverage
+        if [ "$TEST_DIRS_COUNT" -gt 0 ]; then
+          OVERALL_LINE_COV=$(echo "scale=1; $OVERALL_LINE_COV / $TEST_DIRS_COUNT" | bc -l 2>/dev/null || echo "0")
+        fi
+
+        # Add summary to results
+        echo "=== Test Summary ===" >> test_results.txt
+        echo "Total test suites: $TEST_DIRS_COUNT" >> test_results.txt
+        echo "Total tests: $TOTAL_TESTS" >> test_results.txt
+        echo "Passed: $PASSED_TESTS" >> test_results.txt
+        echo "Failed: $FAILED_TESTS" >> test_results.txt
+        echo "Overall Line Coverage: ${OVERALL_LINE_COV}%" >> test_results.txt
+
+        # Calculate test success rate
+        if [ $TOTAL_TESTS -gt 0 ]; then
+          TEST_SUCCESS_RATE=$((PASSED_TESTS * 100 / TOTAL_TESTS))
+        else
+          TEST_SUCCESS_RATE=0
+        fi
+
+        # Set environment variables for GitHub Actions
+        echo "TOTAL_TESTS=$TOTAL_TESTS" >> $GITHUB_ENV
+        echo "PASSED_TESTS=$PASSED_TESTS" >> $GITHUB_ENV
+        echo "FAILED_TESTS=$FAILED_TESTS" >> $GITHUB_ENV
+        echo "TEST_SUCCESS_RATE=$TEST_SUCCESS_RATE" >> $GITHUB_ENV
+        echo "TEST_DIRS_COUNT=$TEST_DIRS_COUNT" >> $GITHUB_ENV
+        echo "OVERALL_LINE_COV=$OVERALL_LINE_COV" >> $GITHUB_ENV
+
+    - name: Create Enhanced Job Summary
+      if: always()
+      run: |
+        # Determine coverage status emoji and color
+        COV_EMOJI="🔴"
+        COV_STATUS="Low"
+        if (( $(echo "${{ env.OVERALL_LINE_COV }} >= 90" | bc -l) )); then
+          COV_EMOJI="🟢"
+          COV_STATUS="High"
+        elif (( $(echo "${{ env.OVERALL_LINE_COV }} >= 75" | bc -l) )); then
+          COV_EMOJI="🟡"
+          COV_STATUS="Medium"
+        fi
+
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## 🧪 Unit Tests & Coverage Dashboard
+
+        ### 📊 Test Metrics
+        | Metric | Value | Status |
+        |--------|-------|--------|
+        | 🎯 Test Suites | ${{ env.TEST_DIRS_COUNT }} | ✅ |
+        | ✅ Total Tests | ${{ env.TOTAL_TESTS }} | ✅ |
+        | 🟢 Passed | ${{ env.PASSED_TESTS }} | ✅ |
+        | 🔴 Failed | ${{ env.FAILED_TESTS }} | ${{ env.FAILED_TESTS == '0' && '✅' || '❌' }} |
+        | 📈 Success Rate | ${{ env.TEST_SUCCESS_RATE }}% | ${{ env.TEST_SUCCESS_RATE >= 95 && '✅' || env.TEST_SUCCESS_RATE >= 90 && '🟡' || '❌' }} |
+
+        ### 🎯 Coverage Metrics
+        | Type | Coverage | Status |
+        |------|----------|--------|
+        | 📊 Line Coverage | ${{ env.OVERALL_LINE_COV }}% | ${COV_EMOJI} ${COV_STATUS} |
+
+        ### Overall Status: ${{ env.FAILED_TESTS == '0' && '✅ All Tests Passed' || '❌ Test Failures Detected' }}
+
+        ${{ env.TEST_SUCCESS_RATE < 90 && '⚠️ **Test success rate below 90%. Consider improving test reliability.**' || '' }}
+        ${{ env.TOTAL_TESTS == '0' && '⚠️ **No tests found. Consider adding unit tests.**' || '' }}
+
+        EOF
+
+        # Add coverage recommendations
+        if (( $(echo "${{ env.OVERALL_LINE_COV }} < 75" | bc -l) )); then
+          echo "⚠️ **Line coverage is below 75%. Consider adding more comprehensive tests.**" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        # Add detailed test results if there are failures
+        if [ "${{ env.FAILED_TESTS }}" != "0" ] && [ -f "test_results.txt" ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔍 Detailed Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -A 20 "Failed tests" test_results.txt | head -50 >> $GITHUB_STEP_SUMMARY 2>/dev/null || \
+            echo "Test failure details not available" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> 📁 **Full test results are available in the uploaded artifacts**" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Generate Coverage Badge Data
+      if: always()
+      run: |
+        # Create badge data for potential use
+        COV_COLOR="red"
+        if (( $(echo "${{ env.OVERALL_LINE_COV }} >= 90" | bc -l) )); then
+          COV_COLOR="brightgreen"
+        elif (( $(echo "${{ env.OVERALL_LINE_COV }} >= 75" | bc -l) )); then
+          COV_COLOR="yellow"
+        fi
+
+        # Create a simple JSON with coverage data
+        cat > coverage-badge.json << EOF
+        {
+          "schemaVersion": 1,
+          "label": "coverage",
+          "message": "${{ env.OVERALL_LINE_COV }}%",
+          "color": "$COV_COLOR"
+        }
+        EOF
+
+        echo "Coverage badge data generated"
+
+    - name: Check Coverage Threshold
+      if: always()
+      run: |
+        THRESHOLD=70
+        if (( $(echo "${{ env.OVERALL_LINE_COV }} < $THRESHOLD" | bc -l) )); then
+          echo "❌ Coverage ${{ env.OVERALL_LINE_COV }}% is below threshold of ${THRESHOLD}%"
+          echo "Consider adding more tests to improve coverage"
+          echo "COVERAGE_FAILED=true" >> $GITHUB_ENV
+        else
+          echo "✅ Coverage ${{ env.OVERALL_LINE_COV }}% meets the threshold of ${THRESHOLD}%"
+          echo "COVERAGE_FAILED=false" >> $GITHUB_ENV
+        fi
+
+    - name: Fail job if tests failed or coverage is low
+      run: |
+        # Check if any tests failed
+        if grep -q "❌ Test suite encountered errors" test_results.txt 2>/dev/null; then
+          echo "❌ Unit tests failed - check test output above"
+          exit 1
+        fi
+
+        # Check coverage threshold
+        if [ "${{ env.COVERAGE_FAILED }}" = "true" ]; then
+          echo "❌ Code coverage ${{ env.OVERALL_LINE_COV }}% is below the required 70% threshold"
+          echo "Add more unit tests to increase coverage before merging"
+          exit 1
+        fi
+
+        echo "✅ All tests passed and coverage meets requirements"
+
+    - name: Upload test results and coverage
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: unit-test-results
+        path: |
+          tests/**/build/artifacts/test/
+          tests/**/build/artifacts/gcov/
+          tests/**/test_output.txt
+          test_results.txt
+          coverage-badge.json
+        retention-days: 30
+
+  # Security scanning with free tools
+  # NOTE: Blackduck (commercial tool) has been replaced with free alternatives
+  #
+  # # Blackduck security scan (COMMENTED OUT - Commercial License Required)
+  # blackduck-scan:
+  #   name: 🔒 Blackduck Security Scan
+  #   runs-on: ubuntu-latest
+  #   if: github.event_name == 'push' || github.event_name == 'schedule'
+  #   steps:
+  #   - name: Checkout code
+  #     uses: actions/checkout@v4
+  #     with:
+  #       fetch-depth: 0
+  #   # ... (Blackduck configuration would go here)
+
+  security-scan:
+    name: 🔒 Security Analysis (GitHub + OWASP)
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Java 17
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Run GitHub Security Analysis
+      run: |
+        START_TIME=$(date +%s)
+
+        echo "=== GitHub Security Analysis ===" > security_output.txt
+        echo "Analysis started at: $(date)" >> security_output.txt
+
+        # Initialize counters
+        GITHUB_ALERTS=0
+        DEPENDENCY_ALERTS=0
+        CODE_SCANNING_ALERTS=0
+
+        # GitHub CLI is pre-installed on ubuntu-latest runners
+        # Check for security alerts (requires GITHUB_TOKEN)
+        if gh auth status > /dev/null 2>&1; then
+          echo "✅ GitHub CLI authenticated" >> security_output.txt
+
+          # Get Dependabot alerts with better error handling
+          echo "Checking Dependabot alerts..." >> security_output.txt
+          if DEPENDABOT_RESPONSE=$(gh api repos/${{ github.repository }}/dependabot/alerts 2>&1); then
+            if echo "$DEPENDABOT_RESPONSE" | jq empty 2>/dev/null; then
+              DEPENDENCY_ALERTS=$(echo "$DEPENDABOT_RESPONSE" | jq length 2>/dev/null || echo "0")
+              echo "Dependabot alerts found: $DEPENDENCY_ALERTS" >> security_output.txt
+            else
+              echo "Dependabot API returned invalid JSON: $DEPENDABOT_RESPONSE" >> security_output.txt
+              DEPENDENCY_ALERTS=0
+            fi
+          else
+            echo "Dependabot API call failed: $DEPENDABOT_RESPONSE" >> security_output.txt
+            echo "This may be due to insufficient permissions or the feature being disabled" >> security_output.txt
+            DEPENDENCY_ALERTS=0
+          fi
+
+          # Get Code scanning alerts with better error handling
+          echo "Checking code scanning alerts..." >> security_output.txt
+          if CODE_SCANNING_RESPONSE=$(gh api repos/${{ github.repository }}/code-scanning/alerts 2>&1); then
+            if echo "$CODE_SCANNING_RESPONSE" | jq empty 2>/dev/null; then
+              CODE_SCANNING_ALERTS=$(echo "$CODE_SCANNING_RESPONSE" | jq length 2>/dev/null || echo "0")
+              echo "Code scanning alerts found: $CODE_SCANNING_ALERTS" >> security_output.txt
+            else
+              echo "Code scanning API returned invalid JSON: $CODE_SCANNING_RESPONSE" >> security_output.txt
+              CODE_SCANNING_ALERTS=0
+            fi
+          else
+            echo "Code scanning API call failed: $CODE_SCANNING_RESPONSE" >> security_output.txt
+            echo "This may be due to insufficient permissions or CodeQL not being set up" >> security_output.txt
+            CODE_SCANNING_ALERTS=0
+          fi
+        else
+          echo "⚠️ GitHub CLI not authenticated, skipping alerts check" >> security_output.txt
+          DEPENDENCY_ALERTS=0
+          CODE_SCANNING_ALERTS=0
+        fi
+
+        # Clean and validate numbers
+        DEPENDENCY_ALERTS=${DEPENDENCY_ALERTS:-0}
+        CODE_SCANNING_ALERTS=${CODE_SCANNING_ALERTS:-0}
+        GITHUB_ALERTS=$((DEPENDENCY_ALERTS + CODE_SCANNING_ALERTS))
+
+        echo "GITHUB_ALERTS=$GITHUB_ALERTS" >> $GITHUB_ENV
+        echo "DEPENDENCY_ALERTS=$DEPENDENCY_ALERTS" >> $GITHUB_ENV
+        echo "CODE_SCANNING_ALERTS=$CODE_SCANNING_ALERTS" >> $GITHUB_ENV
+
+        END_TIME=$(date +%s)
+        GITHUB_SCAN_TIME=$((END_TIME - START_TIME))
+        echo "GITHUB_SCAN_TIME=$GITHUB_SCAN_TIME" >> $GITHUB_ENV
+
+        echo "GitHub analysis completed at: $(date)" >> security_output.txt
+        echo "GitHub scan time: ${GITHUB_SCAN_TIME}s" >> security_output.txt
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Download and Run OWASP Dependency Check
+      run: |
+        START_TIME=$(date +%s)
+
+        echo "=== OWASP Dependency Check ===" >> security_output.txt
+        echo "OWASP scan started at: $(date)" >> security_output.txt
+
+        # Download OWASP Dependency Check
+        DC_VERSION="9.0.4"
+        curl -s -L "https://github.com/jeremylong/DependencyCheck/releases/download/v${DC_VERSION}/dependency-check-${DC_VERSION}-release.zip" -o dependency-check.zip
+        unzip -q dependency-check.zip
+
+        # Create reports directory
+        mkdir -p security-reports
+
+        # Run OWASP Dependency Check
+        ./dependency-check/bin/dependency-check.sh \
+          --project "no-OS" \
+          --scan . \
+          --exclude "**/build/**" \
+          --exclude "**/libraries/azure/**" \
+          --exclude "**/libraries/mbed/**" \
+          --exclude "**/libraries/mbedtls/**" \
+          --exclude "**/tests/**/build/**" \
+          --format XML \
+          --format HTML \
+          --format JSON \
+          --out security-reports/ \
+          --nvdApiKey ${{ secrets.NVD_API_KEY || '' }} \
+          --enableExperimental >> security_output.txt 2>&1 || true
+
+        # Parse OWASP results
+        if [ -f "security-reports/dependency-check-report.xml" ]; then
+          # Count vulnerabilities by severity
+          CRITICAL_VULNS=$(grep -c 'severity="CRITICAL"' security-reports/dependency-check-report.xml 2>/dev/null || echo "0")
+          HIGH_VULNS=$(grep -c 'severity="HIGH"' security-reports/dependency-check-report.xml 2>/dev/null || echo "0")
+          MEDIUM_VULNS=$(grep -c 'severity="MEDIUM"' security-reports/dependency-check-report.xml 2>/dev/null || echo "0")
+          LOW_VULNS=$(grep -c 'severity="LOW"' security-reports/dependency-check-report.xml 2>/dev/null || echo "0")
+
+          TOTAL_OWASP_VULNS=$((CRITICAL_VULNS + HIGH_VULNS + MEDIUM_VULNS + LOW_VULNS))
+
+          echo "OWASP vulnerabilities by severity:" >> security_output.txt
+          echo "Critical: $CRITICAL_VULNS" >> security_output.txt
+          echo "High: $HIGH_VULNS" >> security_output.txt
+          echo "Medium: $MEDIUM_VULNS" >> security_output.txt
+          echo "Low: $LOW_VULNS" >> security_output.txt
+          echo "Total: $TOTAL_OWASP_VULNS" >> security_output.txt
+        else
+          echo "⚠️ OWASP Dependency Check report not generated" >> security_output.txt
+          CRITICAL_VULNS=0
+          HIGH_VULNS=0
+          MEDIUM_VULNS=0
+          LOW_VULNS=0
+          TOTAL_OWASP_VULNS=0
+        fi
+
+        END_TIME=$(date +%s)
+        OWASP_SCAN_TIME=$((END_TIME - START_TIME))
+
+        # Set environment variables
+        echo "OWASP_SCAN_TIME=$OWASP_SCAN_TIME" >> $GITHUB_ENV
+        echo "CRITICAL_VULNS=$CRITICAL_VULNS" >> $GITHUB_ENV
+        echo "HIGH_VULNS=$HIGH_VULNS" >> $GITHUB_ENV
+        echo "MEDIUM_VULNS=$MEDIUM_VULNS" >> $GITHUB_ENV
+        echo "LOW_VULNS=$LOW_VULNS" >> $GITHUB_ENV
+        echo "TOTAL_OWASP_VULNS=$TOTAL_OWASP_VULNS" >> $GITHUB_ENV
+
+        # Calculate total security issues
+        TOTAL_SECURITY_ISSUES=$((GITHUB_ALERTS + TOTAL_OWASP_VULNS))
+        echo "TOTAL_SECURITY_ISSUES=$TOTAL_SECURITY_ISSUES" >> $GITHUB_ENV
+
+        # Determine security status
+        if [ $CRITICAL_VULNS -gt 0 ]; then
+          echo "SECURITY_STATUS=CRITICAL" >> $GITHUB_ENV
+        elif [ $HIGH_VULNS -gt 0 ] || [ $GITHUB_ALERTS -gt 0 ]; then
+          echo "SECURITY_STATUS=HIGH_RISK" >> $GITHUB_ENV
+        elif [ $MEDIUM_VULNS -gt 0 ]; then
+          echo "SECURITY_STATUS=MEDIUM_RISK" >> $GITHUB_ENV
+        elif [ $LOW_VULNS -gt 0 ]; then
+          echo "SECURITY_STATUS=LOW_RISK" >> $GITHUB_ENV
+        else
+          echo "SECURITY_STATUS=CLEAN" >> $GITHUB_ENV
+        fi
+
+        echo "OWASP scan completed at: $(date)" >> security_output.txt
+        echo "OWASP scan time: ${OWASP_SCAN_TIME}s" >> security_output.txt
+
+    - name: Create Security Job Summary
+      if: always()
+      run: |
+        # Calculate total scan time
+        TOTAL_SCAN_TIME=$((GITHUB_SCAN_TIME + OWASP_SCAN_TIME))
+
+        # Determine status emoji and message
+        case "${{ env.SECURITY_STATUS }}" in
+          "CLEAN")
+            STATUS_EMOJI="✅"
+            STATUS_MSG="No Security Issues Detected"
+            ;;
+          "LOW_RISK")
+            STATUS_EMOJI="🟡"
+            STATUS_MSG="Low Risk Issues Found"
+            ;;
+          "MEDIUM_RISK")
+            STATUS_EMOJI="🟠"
+            STATUS_MSG="Medium Risk Issues Found"
+            ;;
+          "HIGH_RISK")
+            STATUS_EMOJI="🔴"
+            STATUS_MSG="High Risk Issues Found"
+            ;;
+          "CRITICAL")
+            STATUS_EMOJI="💀"
+            STATUS_MSG="Critical Security Issues Found"
+            ;;
+          *)
+            STATUS_EMOJI="⚠️"
+            STATUS_MSG="Security Scan Completed"
+            ;;
+        esac
+
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## 🔒 Security Analysis Results (GitHub + OWASP)
+
+        ### ${STATUS_EMOJI} ${STATUS_MSG}
+
+        | Tool | Purpose | Issues Found |
+        |------|---------|--------------|
+        | 🐙 GitHub Security | Repository alerts | ${{ env.GITHUB_ALERTS }} |
+        | 🛡️ OWASP Dependency Check | Vulnerability scanning | ${{ env.TOTAL_OWASP_VULNS }} |
+
+        ### 📊 Vulnerability Breakdown (OWASP)
+        | Severity | Count | Priority |
+        |----------|-------|----------|
+        | 💀 Critical | ${{ env.CRITICAL_VULNS }} | Immediate |
+        | 🔴 High | ${{ env.HIGH_VULNS }} | Within 7 days |
+        | 🟠 Medium | ${{ env.MEDIUM_VULNS }} | Within 30 days |
+        | 🟡 Low | ${{ env.LOW_VULNS }} | Monitor |
+
+        ### 🐙 GitHub Security Alerts
+        | Type | Count |
+        |------|-------|
+        | 📦 Dependabot | ${{ env.DEPENDENCY_ALERTS }} |
+        | 🔍 Code Scanning | ${{ env.CODE_SCANNING_ALERTS }} |
+
+        ### ⏱️ Scan Performance
+        - **GitHub Analysis**: ${{ env.GITHUB_SCAN_TIME }}s
+        - **OWASP Dependency Check**: ${{ env.OWASP_SCAN_TIME }}s
+        - **Total Duration**: ${TOTAL_SCAN_TIME}s
+
+        ### 🎯 Security Summary
+        - **Total Issues**: ${{ env.TOTAL_SECURITY_ISSUES }}
+        - **Risk Level**: ${{ env.SECURITY_STATUS }}
+        - **Tools Used**: GitHub Security + OWASP Dependency Check
+
+        > 📁 **Reports Available**: Check artifacts for detailed HTML, XML, and JSON reports
+
+        ### 💡 Free Security Tools Benefits
+        - ✅ **No licensing costs** (vs commercial tools like Blackduck)
+        - ✅ **GitHub integration** for seamless workflow
+        - ✅ **CVE database access** through OWASP
+        - ✅ **Multiple report formats** for analysis
+        EOF
+
+        # Add recommendations based on findings - always show this section for transparency
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+
+        ### 🔍 Detailed Security Findings
+
+        #### 📦 Dependabot Alert Details
+        EOF
+
+        # Show Dependabot alert details if any exist
+        if [ "${{ env.DEPENDENCY_ALERTS }}" != "0" ]; then
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # Capture API response for better error handling
+          if DEPENDABOT_RESPONSE=$(gh api repos/${{ github.repository }}/dependabot/alerts 2>&1); then
+            if echo "$DEPENDABOT_RESPONSE" | jq empty 2>/dev/null && [ "$DEPENDABOT_RESPONSE" != "[]" ]; then
+              # Show JSON structure for debugging
+              echo "JSON structure (first alert):" >> $GITHUB_STEP_SUMMARY
+              echo "$DEPENDABOT_RESPONSE" | jq '.[0] // "No alerts in array"' 2>/dev/null | head -10 >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+
+              # Try to parse with error handling and fallbacks
+              if echo "$DEPENDABOT_RESPONSE" | jq -r '.[] | "• \(.security_advisory.summary // "No summary available") (Severity: \(.security_advisory.severity // "Unknown"))\n  Package: \(.dependency.package.name // "Unknown package")\n  Vulnerable versions: \(.security_advisory.vulnerabilities[0].vulnerable_version_range // "N/A")\n  CVE: \(.security_advisory.cve_id // "N/A")\n"' 2>/dev/null | head -20 >> $GITHUB_STEP_SUMMARY; then
+                echo "Successfully parsed Dependabot alerts" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "Failed to parse Dependabot alerts with expected structure. Raw data:" >> $GITHUB_STEP_SUMMARY
+                echo "$DEPENDABOT_RESPONSE" | head -500 >> $GITHUB_STEP_SUMMARY
+              fi
+            else
+              echo "Dependabot API returned empty or invalid JSON" >> $GITHUB_STEP_SUMMARY
+              echo "Raw response (first 200 chars): $(echo "$DEPENDABOT_RESPONSE" | head -c 200)" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "Could not retrieve detailed Dependabot information" >> $GITHUB_STEP_SUMMARY
+            echo "API call failed: $DEPENDABOT_RESPONSE" >> $GITHUB_STEP_SUMMARY
+            echo "This may be due to permissions, rate limiting, or feature not being enabled" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        else
+          echo "No Dependabot alerts found." >> $GITHUB_STEP_SUMMARY
+        fi
+
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+
+        #### 🔍 Code Scanning Alert Details
+        EOF
+
+        # Show Code Scanning alert details if any exist
+        if [ "${{ env.CODE_SCANNING_ALERTS }}" != "0" ]; then
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # Capture API response for better error handling
+          if CODE_SCANNING_RESPONSE=$(gh api repos/${{ github.repository }}/code-scanning/alerts 2>&1); then
+            if echo "$CODE_SCANNING_RESPONSE" | jq empty 2>/dev/null && [ "$CODE_SCANNING_RESPONSE" != "[]" ]; then
+              # Show JSON structure for debugging
+              echo "JSON structure (first alert):" >> $GITHUB_STEP_SUMMARY
+              echo "$CODE_SCANNING_RESPONSE" | jq '.[0] // "No alerts in array"' 2>/dev/null | head -10 >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+
+              # Try to parse with error handling and fallbacks
+              if echo "$CODE_SCANNING_RESPONSE" | jq -r '.[] | "• \(.rule.description // "No description available") (Severity: \(.rule.severity // "Unknown"))\n  Rule: \(.rule.id // "Unknown rule")\n  Location: \(.most_recent_instance.location.path // "Unknown"):\(.most_recent_instance.location.start_line // "N/A")\n  State: \(.state // "Unknown")\n"' 2>/dev/null | head -20 >> $GITHUB_STEP_SUMMARY; then
+                echo "Successfully parsed Code Scanning alerts" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "Failed to parse Code Scanning alerts with expected structure. Raw data:" >> $GITHUB_STEP_SUMMARY
+                echo "$CODE_SCANNING_RESPONSE" | head -500 >> $GITHUB_STEP_SUMMARY
+              fi
+            else
+              echo "Code Scanning API returned empty or invalid JSON" >> $GITHUB_STEP_SUMMARY
+              echo "Raw response (first 200 chars): $(echo "$CODE_SCANNING_RESPONSE" | head -c 200)" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "Could not retrieve detailed Code Scanning information" >> $GITHUB_STEP_SUMMARY
+            echo "API call failed: $CODE_SCANNING_RESPONSE" >> $GITHUB_STEP_SUMMARY
+            echo "This may be due to permissions, rate limiting, or CodeQL not being configured" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        else
+          echo "No Code Scanning alerts found." >> $GITHUB_STEP_SUMMARY
+        fi
+
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+
+        ### 🔧 Troubleshooting Information
+
+        #### API Response Status
+        | API Endpoint | Status | Notes |
+        |--------------|--------|-------|
+        | Dependabot | ${{ env.DEPENDENCY_ALERTS != '0' && 'Has alerts' || 'No alerts or API failed' }} | Check repository security settings |
+        | Code Scanning | ${{ env.CODE_SCANNING_ALERTS != '0' && 'Has alerts' || 'No alerts or API failed' }} | Ensure CodeQL is configured |
+
+        #### Common Issues
+        - **Empty alert details**: API permissions may be insufficient
+        - **Authentication errors**: Verify GITHUB_TOKEN has security read permissions
+        - **Feature availability**: Some features require GitHub Advanced Security or public repos
+        - **Rate limiting**: GitHub API may be temporarily limited
+
+        #### Repository Security Settings
+        To enable these features:
+        1. Go to Settings > Security & analysis
+        2. Enable Dependabot alerts and security updates
+        3. Enable Code scanning (CodeQL)
+
+        ### 🚀 Next Steps
+        1. Review detailed reports in uploaded artifacts
+        2. Enable GitHub's Dependabot for automated updates
+        3. Configure GitHub Code Scanning (CodeQL) for static analysis
+        4. Consider adding Snyk for additional coverage
+        EOF
+
+    - name: Fail job if critical security vulnerabilities found
+      run: |
+        if [ "${{ env.CRITICAL_VULNS }}" -gt "0" ]; then
+          echo "❌ Security scan found ${{ env.CRITICAL_VULNS }} critical vulnerabilities"
+          echo "Critical vulnerabilities must be addressed before merging"
+          echo "Review the security report artifacts for details"
+          exit 1
+        else
+          echo "✅ No critical security vulnerabilities found"
+          if [ "${{ env.HIGH_VULNS }}" -gt "0" ]; then
+            echo "⚠️  Found ${{ env.HIGH_VULNS }} high-severity vulnerabilities (non-blocking)"
+          fi
+        fi
+
+    - name: Upload Security Reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-analysis-reports
+        path: |
+          security-reports/
+          security_output.txt
+        retention-days: 30
+
+  # Valgrind memory analysis
+  valgrind-analysis:
+    name: 🧠 Valgrind Memory Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 50
+
+    - name: Install Valgrind and dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y valgrind build-essential gcc gdb libc6-dbg
+
+    - name: Setup Ruby for tests
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: '3.0'
+        bundler-cache: false
+
+    - name: Install Ceedling
+      run: |
+        gem install ceedling
+
+    - name: Run Valgrind Analysis
+      run: |
+        START_TIME=$(date +%s)
+
+        echo "=== Starting Valgrind Memory Analysis ===" > valgrind_output.txt
+        echo "Analysis started at: $(date)" >> valgrind_output.txt
+
+        # Initialize counters
+        TOTAL_TESTS_RUN=0
+        MEMORY_LEAKS=0
+        MEMORY_ERRORS=0
+        INVALID_READS=0
+        INVALID_WRITES=0
+
+        # Find test directories
+        test_dirs=$(find tests -name "project.yml" -type f -exec dirname {} \;)
+
+        if [ -z "$test_dirs" ]; then
+          echo "No test directories found for Valgrind analysis"
+          echo "TEST_STATUS=NO_TESTS" >> $GITHUB_ENV
+          exit 0
+        fi
+
+        # Create valgrind reports directory
+        mkdir -p valgrind_reports
+
+        # Run Valgrind on each test suite
+        for test_dir in $test_dirs; do
+          echo "=== Analyzing: $test_dir ===" >> valgrind_output.txt
+          cd "$test_dir"
+
+          # Build tests first
+          if ceedling test:all 2>&1 | tee -a build_output.txt; then
+            echo "✅ Tests built successfully for $test_dir" >> ../../valgrind_output.txt
+
+            # Find test executables
+            test_executables=$(find build/test/out -name "test_*" -type f -executable 2>/dev/null || true)
+
+            for exe in $test_executables; do
+              if [ -f "$exe" ]; then
+                echo "Running Valgrind on: $exe" >> ../../valgrind_output.txt
+                TOTAL_TESTS_RUN=$((TOTAL_TESTS_RUN + 1))
+
+                # Run Valgrind with comprehensive checks
+                valgrind \
+                  --tool=memcheck \
+                  --leak-check=full \
+                  --show-leak-kinds=all \
+                  --track-origins=yes \
+                  --verbose \
+                  --xml=yes \
+                  --xml-file="../../valgrind_reports/$(basename $exe).xml" \
+                  "$exe" > "../../valgrind_reports/$(basename $exe).log" 2>&1 || true
+
+                # Parse results from this run
+                if [ -f "../../valgrind_reports/$(basename $exe).log" ]; then
+                  # Count different types of issues
+                  LEAKS=$(grep -c "definitely lost\|possibly lost" "../../valgrind_reports/$(basename $exe).log" 2>/dev/null || echo "0")
+                  ERRORS=$(grep -c "Invalid read\|Invalid write\|Conditional jump" "../../valgrind_reports/$(basename $exe).log" 2>/dev/null || echo "0")
+                  READS=$(grep -c "Invalid read" "../../valgrind_reports/$(basename $exe).log" 2>/dev/null || echo "0")
+                  WRITES=$(grep -c "Invalid write" "../../valgrind_reports/$(basename $exe).log" 2>/dev/null || echo "0")
+
+                  MEMORY_LEAKS=$((MEMORY_LEAKS + LEAKS))
+                  MEMORY_ERRORS=$((MEMORY_ERRORS + ERRORS))
+                  INVALID_READS=$((INVALID_READS + READS))
+                  INVALID_WRITES=$((INVALID_WRITES + WRITES))
+                fi
+              fi
+            done
+          else
+            echo "❌ Failed to build tests for $test_dir" >> ../../valgrind_output.txt
+          fi
+
+          cd - > /dev/null
+        done
+
+        END_TIME=$(date +%s)
+        ANALYSIS_TIME=$((END_TIME - START_TIME))
+
+        echo "Analysis completed at: $(date)" >> valgrind_output.txt
+        echo "Total analysis time: ${ANALYSIS_TIME}s" >> valgrind_output.txt
+        echo "Test executables analyzed: $TOTAL_TESTS_RUN" >> valgrind_output.txt
+        echo "Memory leaks found: $MEMORY_LEAKS" >> valgrind_output.txt
+        echo "Memory errors found: $MEMORY_ERRORS" >> valgrind_output.txt
+
+        # Set environment variables
+        echo "ANALYSIS_TIME=$ANALYSIS_TIME" >> $GITHUB_ENV
+        echo "TOTAL_TESTS_RUN=$TOTAL_TESTS_RUN" >> $GITHUB_ENV
+        echo "MEMORY_LEAKS=$MEMORY_LEAKS" >> $GITHUB_ENV
+        echo "MEMORY_ERRORS=$MEMORY_ERRORS" >> $GITHUB_ENV
+        echo "INVALID_READS=$INVALID_READS" >> $GITHUB_ENV
+        echo "INVALID_WRITES=$INVALID_WRITES" >> $GITHUB_ENV
+
+        if [ $TOTAL_TESTS_RUN -eq 0 ]; then
+          echo "TEST_STATUS=NO_TESTS" >> $GITHUB_ENV
+        elif [ $MEMORY_LEAKS -eq 0 ] && [ $MEMORY_ERRORS -eq 0 ]; then
+          echo "TEST_STATUS=CLEAN" >> $GITHUB_ENV
+        else
+          echo "TEST_STATUS=ISSUES_FOUND" >> $GITHUB_ENV
+        fi
+
+    - name: Create Valgrind Job Summary
+      if: always()
+      run: |
+        if [ "${{ env.TEST_STATUS }}" = "NO_TESTS" ]; then
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## 🧠 Valgrind Memory Analysis
+
+        ### ⚠️ No Tests Found
+        No test executables were found to analyze with Valgrind.
+
+        > 💡 **Tip**: Ensure your unit tests compile to executable binaries for memory analysis
+        EOF
+        else
+          # Calculate memory quality score
+          TOTAL_ISSUES=$((${{ env.MEMORY_LEAKS }} + ${{ env.MEMORY_ERRORS }}))
+          if [ $TOTAL_ISSUES -eq 0 ]; then
+            MEMORY_QUALITY="🟢 Excellent"
+          elif [ $TOTAL_ISSUES -le 5 ]; then
+            MEMORY_QUALITY="🟡 Good"
+          else
+            MEMORY_QUALITY="🔴 Needs Attention"
+          fi
+
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## 🧠 Valgrind Memory Analysis Results
+
+        | Metric | Count | Status |
+        |--------|-------|--------|
+        | ⏱️ Analysis Time | ${{ env.ANALYSIS_TIME }}s | ✅ |
+        | 🎯 Tests Analyzed | ${{ env.TOTAL_TESTS_RUN }} | ✅ |
+        | 💧 Memory Leaks | ${{ env.MEMORY_LEAKS }} | ${{ env.MEMORY_LEAKS == '0' && '✅' || '❌' }} |
+        | ⚠️ Memory Errors | ${{ env.MEMORY_ERRORS }} | ${{ env.MEMORY_ERRORS == '0' && '✅' || '❌' }} |
+        | 📖 Invalid Reads | ${{ env.INVALID_READS }} | ${{ env.INVALID_READS == '0' && '✅' || '❌' }} |
+        | ✏️ Invalid Writes | ${{ env.INVALID_WRITES }} | ${{ env.INVALID_WRITES == '0' && '✅' || '❌' }} |
+
+        ### Memory Quality: ${MEMORY_QUALITY}
+
+        ### Status: ${{ env.TEST_STATUS == 'CLEAN' && '✅ No Memory Issues Detected' || '⚠️ Memory Issues Found' }}
+
+        ### 🔍 Analysis Coverage
+        - **Memory Leaks**: Definite and possible leaks detected
+        - **Buffer Overflows**: Invalid reads and writes identified
+        - **Uninitialized Memory**: Usage of uninitialized values tracked
+        - **Double Free**: Multiple deallocations caught
+        EOF
+
+        # Add detailed breakdown if issues found
+        if [ "${{ env.TEST_STATUS }}" = "ISSUES_FOUND" ]; then
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+
+        ### 🚨 Issue Breakdown
+        - **Memory Leaks (${{ env.MEMORY_LEAKS }})**: Memory allocated but never freed
+        - **Invalid Reads (${{ env.INVALID_READS }})**: Reading from invalid memory locations
+        - **Invalid Writes (${{ env.INVALID_WRITES }})**: Writing to invalid memory locations
+
+        > 📁 **Detailed Reports**: Check the uploaded Valgrind artifacts for complete analysis
+        EOF
+        fi
+
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+
+        ### 💡 Recommendations
+        - Review detailed Valgrind logs for specific issue locations
+        - Fix memory leaks by ensuring all `malloc()` calls have matching `free()`
+        - Address buffer overflows by checking array bounds
+        - Initialize all variables before use
+        EOF
+        fi
+
+    - name: Fail job if critical memory issues found
+      run: |
+        if [ "${{ env.TEST_STATUS }}" = "NO_TESTS" ]; then
+          echo "✅ No tests to run - skipping memory analysis failure check"
+          exit 0
+        fi
+
+        TOTAL_ISSUES=$((${{ env.MEMORY_LEAKS }} + ${{ env.MEMORY_ERRORS }}))
+        if [ $TOTAL_ISSUES -gt 0 ]; then
+          echo "❌ Valgrind found $TOTAL_ISSUES memory issues:"
+          echo "  - Memory leaks: ${{ env.MEMORY_LEAKS }}"
+          echo "  - Memory errors: ${{ env.MEMORY_ERRORS }}"
+          echo "Fix memory issues before merging - check uploaded Valgrind reports for details"
+          exit 1
+        else
+          echo "✅ No memory leaks or errors detected by Valgrind"
+        fi
+
+    - name: Upload Valgrind reports
+      if: always() && env.TEST_STATUS != 'NO_TESTS'
+      uses: actions/upload-artifact@v4
+      with:
+        name: valgrind-memory-analysis
+        path: |
+          valgrind_reports/
+          valgrind_output.txt
+        retention-days: 30
+
+  # Metrics summary job
+  metrics-summary:
+    name: 📊 Metrics Dashboard
+    runs-on: ubuntu-latest
+    needs: [astyle, cppcheck, drivers, unit-tests, security-scan, valgrind-analysis, documentation]
+    if: always()
+
+    steps:
+    - name: Calculate Quality Score
+      id: quality-score
+      run: |
+        # Calculate quality score based on job results - with safe arithmetic
+        ASTYLE_SCORE=0
+        CPPCHECK_SCORE=0
+        DRIVERS_SCORE=0
+        TESTS_SCORE=0
+        SECURITY_SCORE=0
+        MEMORY_SCORE=0
+        DOCUMENTATION_SCORE=0
+
+        # Check each job result safely
+        if [ "${{ needs.astyle.result }}" = "success" ]; then
+          ASTYLE_SCORE=15
+        fi
+
+        if [ "${{ needs.cppcheck.result }}" = "success" ]; then
+          if [ "${{ env.STATIC_ANALYSIS_STRICT }}" = "true" ]; then
+            # Strict mode: require zero issues for full score
+            if [ "${{ needs.cppcheck.outputs.total_issues }}" = "0" ]; then
+              CPPCHECK_SCORE=15
+            fi
+          else
+            # Lenient mode: only require zero errors for full score (warnings OK)
+            ERRORS_COUNT="${{ needs.cppcheck.outputs.has_errors }}"
+            if [ "${ERRORS_COUNT:-0}" = "00" ]; then
+              CPPCHECK_SCORE=15
+            fi
+          fi
+        fi
+
+        if [ "${{ needs.drivers.result }}" = "success" ]; then
+          DRIVERS_SCORE=20
+        fi
+
+        if [ "${{ needs.unit-tests.result }}" = "success" ]; then
+          TESTS_SCORE=20
+        fi
+
+        # Security analysis score (GitHub + OWASP)
+        if [ "${{ needs.security-scan.result }}" = "success" ]; then
+          SECURITY_SCORE=15
+        fi
+
+        # Memory analysis score (Valgrind)
+        if [ "${{ needs.valgrind-analysis.result }}" = "success" ]; then
+          MEMORY_SCORE=10
+        fi
+
+        # Documentation score (required)
+        if [ "${{ needs.documentation.result }}" = "success" ]; then
+          DOCUMENTATION_SCORE=10
+        fi
+
+        # Calculate total score safely
+        TOTAL_SCORE=$((ASTYLE_SCORE + CPPCHECK_SCORE + DRIVERS_SCORE + TESTS_SCORE + SECURITY_SCORE + MEMORY_SCORE + DOCUMENTATION_SCORE))
+
+        echo "TOTAL_SCORE=$TOTAL_SCORE" >> $GITHUB_ENV
+        echo "SECURITY_SCORE=$SECURITY_SCORE" >> $GITHUB_ENV
+        echo "MEMORY_SCORE=$MEMORY_SCORE" >> $GITHUB_ENV
+        echo "DOCUMENTATION_SCORE=$DOCUMENTATION_SCORE" >> $GITHUB_ENV
+
+        # Determine overall status message
+        if [ $TOTAL_SCORE -eq 110 ]; then
+          echo "QUALITY_MESSAGE=🎉 **Perfect! All quality gates passed including documentation.**" >> $GITHUB_ENV
+        elif [ $TOTAL_SCORE -ge 100 ]; then
+          echo "QUALITY_MESSAGE=✅ **Excellent! High quality with robust security posture.**" >> $GITHUB_ENV
+        elif [ $TOTAL_SCORE -ge 85 ]; then
+          echo "QUALITY_MESSAGE=🟡 **Good quality, some improvements needed.**" >> $GITHUB_ENV
+        elif [ $TOTAL_SCORE -ge 70 ]; then
+          echo "QUALITY_MESSAGE=⚠️ **Quality improvements needed across multiple areas.**" >> $GITHUB_ENV
+        elif [ $TOTAL_SCORE -ge 50 ]; then
+          echo "QUALITY_MESSAGE=❌ **Significant quality issues require attention.**" >> $GITHUB_ENV
+        else
+          echo "QUALITY_MESSAGE=❌ **Critical quality failures - immediate attention required.**" >> $GITHUB_ENV
+        fi
+
+    - name: Calculate Static Analysis Status
+      run: |
+        echo "Debug: cppcheck.result=${{ needs.cppcheck.result }}"
+        echo "Debug: STATIC_ANALYSIS_STRICT=${{ env.STATIC_ANALYSIS_STRICT }}"
+        echo "Debug: total_issues=${{ needs.cppcheck.outputs.total_issues }}"
+        echo "Debug: has_errors=${{ needs.cppcheck.outputs.has_errors }}"
+
+        if [ "${{ needs.cppcheck.result }}" = "success" ]; then
+          if [ "${{ env.STATIC_ANALYSIS_STRICT }}" = "true" ]; then
+            # Strict mode: require zero issues
+            TOTAL_ISSUES=$((0 + ${{ needs.cppcheck.outputs.total_issues }}))
+            if [ $TOTAL_ISSUES -eq 0 ]; then
+              echo "STATIC_ANALYSIS_STATUS=✅ PASS" >> $GITHUB_ENV
+            else
+              echo "STATIC_ANALYSIS_STATUS=❌ FAIL" >> $GITHUB_ENV
+            fi
+          else
+            # Lenient mode: only require zero errors (warnings/style/performance OK)
+            ERRORS_COUNT="${{ needs.cppcheck.outputs.has_errors }}"
+            ERRORS=$((0 + ${ERRORS_COUNT:-0}))
+            if [ $ERRORS -eq 0 ]; then
+              echo "STATIC_ANALYSIS_STATUS=✅ PASS" >> $GITHUB_ENV
+            else
+              echo "STATIC_ANALYSIS_STATUS=❌ FAIL" >> $GITHUB_ENV
+            fi
+          fi
+        else
+          echo "STATIC_ANALYSIS_STATUS=❌ FAIL" >> $GITHUB_ENV
+        fi
+
+        # Calculate Security Analysis Status
+        if [ "${{ needs.security-scan.result }}" = "success" ]; then
+          echo "SECURITY_ANALYSIS_STATUS=✅ PASS" >> $GITHUB_ENV
+        else
+          echo "SECURITY_ANALYSIS_STATUS=❌ FAIL" >> $GITHUB_ENV
+        fi
+
+        # Calculate Memory Analysis Status
+        if [ "${{ needs.valgrind-analysis.result }}" = "success" ]; then
+          echo "MEMORY_ANALYSIS_STATUS=✅ PASS" >> $GITHUB_ENV
+        else
+          echo "MEMORY_ANALYSIS_STATUS=❌ FAIL" >> $GITHUB_ENV
+        fi
+
+        # Calculate Documentation Status
+        if [ "${{ needs.documentation.result }}" = "success" ]; then
+          echo "DOCUMENTATION_STATUS=✅ PASS" >> $GITHUB_ENV
+        else
+          echo "DOCUMENTATION_STATUS=⚠️ FAIL" >> $GITHUB_ENV
+        fi
+
+    - name: Create Overall Dashboard
+      run: |
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        # [📊 Overall Project Health Dashboard](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+        ## 🎯 Quality Gates
+
+        | Gate | Status | Details |
+        |------|--------|---------|
+        | 🎨 Code Style | ${{ needs.astyle.result == 'success' && '✅ PASS' || '❌ FAIL' }} | Automated formatting compliance |
+        | 🔍 Static Analysis | ${{ env.STATIC_ANALYSIS_STATUS }} | Code quality checks (${{ env.STATIC_ANALYSIS_STRICT == 'true' && 'STRICT' || 'LENIENT' }}) |
+        | 🔨 Build | ${{ needs.drivers.result == 'success' && '✅ PASS' || '❌ FAIL' }} | Compilation success |
+        | 🧪 Tests | ${{ needs.unit-tests.result == 'success' && '✅ PASS' || '❌ FAIL' }} | Unit test execution |
+        | 🔒 Security | ${{ env.SECURITY_ANALYSIS_STATUS }} | Vulnerability scanning (GitHub + OWASP) |
+        | 🧠 Memory | ${{ env.MEMORY_ANALYSIS_STATUS }} | Memory leak detection (Valgrind) |
+        | 📚 Documentation | ${{ env.DOCUMENTATION_STATUS }} | Sphinx + Doxygen build (REQUIRED) |
+
+        ## 🔗 Enhanced Analysis
+
+        | Tool | Purpose | Status |
+        |------|---------|--------|
+        | 📊 [SonarCloud](https://sonarcloud.io/project/overview?id=cjones-adi_no-OS) | Security & Quality | [View Results](https://sonarcloud.io/project/overview?id=cjones-adi_no-OS) |
+        | 🔒 GitHub + OWASP | Security & Vulnerability Scanning | ${{ needs.security-scan.result == 'success' && '✅ Completed' || '❌ Failed' }} |
+        | 🧠 Valgrind | Memory Analysis | ${{ needs.valgrind-analysis.result == 'success' && '✅ Completed' || '❌ Failed' }} |
+
+        ## 📈 Trend Indicators
+
+        > 💡 **Tip**: Click on individual job summaries above for detailed metrics
+
+        ### 🏆 Quality Score
+        ${{ env.TOTAL_SCORE }}/110
+
+        **Breakdown:**
+        - Code Style (15pts): ${{ needs.astyle.result == 'success' && '✅ 15' || '❌ 0' }}
+        - Static Analysis (15pts): ${{ env.STATIC_ANALYSIS_STATUS == '✅ PASS' && '✅ 15' || '❌ 0' }}
+        - Build (20pts): ${{ needs.drivers.result == 'success' && '✅ 20' || '❌ 0' }}
+        - Tests (20pts): ${{ needs.unit-tests.result == 'success' && '✅ 20' || '❌ 0' }}
+        - Security (15pts): ${{ env.SECURITY_SCORE }}
+        - Memory (10pts): ${{ env.MEMORY_SCORE }}
+        - Documentation (10pts): ${{ env.DOCUMENTATION_SCORE }}
+
+        ${{ env.QUALITY_MESSAGE }}
+
+        ### 🛡️ Security Posture
+        ${{ env.SECURITY_ANALYSIS_STATUS == '✅ PASS' && '🟢 **Strong**: Using GitHub Security + OWASP (free tools)' || '� **Weak**: Security scanning issues detected' }}
+
+        ### 🧠 Memory Health
+        ${{ env.MEMORY_ANALYSIS_STATUS == '✅ PASS' && '🟢 **Healthy**: No memory issues detected' || '🔴 **Issues**: Memory leaks or errors found' }}
+        EOF
+
+  # Documentation with metrics
+  documentation:
+    name: Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 50
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    - name: Install documentation dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y doxygen graphviz
+        pip install sphinx sphinx-rtd-theme breathe
+
+    - name: Set environment variables
+      run: |
+        echo "BUILD_TYPE=documentation" >> $GITHUB_ENV
+        echo "UPDATE_GH_DOCS=${{ github.ref == 'refs/heads/main' && '1' || '0' }}" >> $GITHUB_ENV
+        echo "GITHUB_DOC_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+        echo "REPO_SLUG=${{ github.repository }}" >> $GITHUB_ENV
+        echo "BUILD_SOURCEBRANCH=${{ github.ref }}" >> $GITHUB_ENV
+
+    - name: Build documentation with metrics
+      run: |
+        START_TIME=$(date +%s)
+
+        # Capture documentation build output with detailed logging
+        echo "=== Starting documentation build ===" > doc_output.txt
+        echo "Build started at: $(date)" >> doc_output.txt
+
+        # Run the build and capture result
+        set -o pipefail
+        if ./ci/run_build.sh 2>&1 | tee -a doc_output.txt; then
+          DOC_RESULT=0
+          echo "DOC_STATUS=SUCCESS" >> doc_output.txt
+          echo "Documentation build completed successfully" >> doc_output.txt
+        else
+          DOC_RESULT=1
+          echo "DOC_STATUS=FAILED" >> doc_output.txt
+          echo "Documentation build failed with errors" >> doc_output.txt
+        fi
+
+        END_TIME=$(date +%s)
+        DOC_BUILD_TIME=$((END_TIME - START_TIME))
+
+        # Count documentation files with multiple possible paths
+        DOXYGEN_FILES=0
+        SPHINX_FILES=0
+
+        # Check various possible Doxygen output locations
+        for doxy_path in "doc/doxygen/html" "doc/doxygen/build/html" "build/doc/doxygen/html"; do
+          if [ -d "$doxy_path" ]; then
+            DOXYGEN_COUNT=$(find "$doxy_path" -name "*.html" 2>/dev/null | wc -l || echo "0")
+            DOXYGEN_FILES=$((DOXYGEN_FILES + DOXYGEN_COUNT))
+            echo "Found $DOXYGEN_COUNT Doxygen files in $doxy_path" >> doc_output.txt
+          fi
+        done
+
+        # Check various possible Sphinx output locations
+        for sphinx_path in "doc/sphinx/_build" "doc/sphinx/_build/html" "doc/sphinx/build/html" "build/doc/sphinx/html"; do
+          if [ -d "$sphinx_path" ]; then
+            SPHINX_COUNT=$(find "$sphinx_path" -name "*.html" 2>/dev/null | wc -l || echo "0")
+            SPHINX_FILES=$((SPHINX_FILES + SPHINX_COUNT))
+            echo "Found $SPHINX_COUNT Sphinx files in $sphinx_path" >> doc_output.txt
+          fi
+        done
+
+        # Calculate total pages
+        TOTAL_PAGES=$((DOXYGEN_FILES + SPHINX_FILES))
+
+        echo "Build completed at: $(date)" >> doc_output.txt
+        echo "Total build time: ${DOC_BUILD_TIME}s" >> doc_output.txt
+        echo "Doxygen pages: $DOXYGEN_FILES" >> doc_output.txt
+        echo "Sphinx pages: $SPHINX_FILES" >> doc_output.txt
+        echo "Total pages: $TOTAL_PAGES" >> doc_output.txt
+
+        echo "DOC_BUILD_TIME=$DOC_BUILD_TIME" >> $GITHUB_ENV
+        echo "DOC_RESULT=$DOC_RESULT" >> $GITHUB_ENV
+        echo "DOXYGEN_FILES=$DOXYGEN_FILES" >> $GITHUB_ENV
+        echo "SPHINX_FILES=$SPHINX_FILES" >> $GITHUB_ENV
+        echo "TOTAL_PAGES=$TOTAL_PAGES" >> $GITHUB_ENV
+
+    - name: Create Job Summary
+      if: always()
+      run: |
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## 📚 Documentation Build Results
+
+        | Metric | Value |
+        |--------|-------|
+        | ⏱️ Build Time | ${{ env.DOC_BUILD_TIME }}s |
+        | 📄 Doxygen Pages | ${{ env.DOXYGEN_FILES }} |
+        | 📖 Sphinx Pages | ${{ env.SPHINX_FILES }} |
+        | 📊 Total Pages | ${{ env.TOTAL_PAGES }} |
+
+        ### Status: ${{ env.DOC_RESULT == '0' && '✅ Documentation Built Successfully' || '❌ Documentation Build Failed' }}
+
+        ${{ env.UPDATE_GH_DOCS == '1' && '🚀 **Documentation will be deployed to GitHub Pages**' || '📝 **Documentation built for preview**' }}
+        EOF
+
+    - name: Fail job if documentation build failed
+      run: |
+        if [ "${{ env.DOC_RESULT }}" != "0" ]; then
+          echo "❌ Documentation build failed with exit code ${{ env.DOC_RESULT }}"
+          echo "Generated ${{ env.DOXYGEN_FILES }} Doxygen pages and ${{ env.SPHINX_FILES }} Sphinx pages"
+          echo "Check the build logs above for specific errors in Doxygen or Sphinx"
+          exit 1
+        else
+          echo "✅ Documentation build completed successfully"
+          echo "Generated ${{ env.TOTAL_PAGES }} total documentation pages"
+        fi

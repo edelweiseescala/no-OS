@@ -1,0 +1,73 @@
+name: Project Builds
+
+on:
+  push:
+    paths:
+      - 'projects/**'
+      - 'drivers/**'
+      - '.github/workflows/projects.yml'
+  pull_request:
+    paths:
+      - 'projects/**'
+      - 'drivers/**'
+      - '.github/workflows/projects.yml'
+
+env:
+  NUM_JOBS: 4
+
+jobs:
+  # Matrix build for different platforms
+  build-projects:
+    name: Build Projects
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - xilinx
+          - altera
+          - maxim
+          - stm32
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+        
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc-arm-none-eabi
+        
+    - name: Cache build dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache
+          /tmp/build-cache
+        key: ${{ runner.os }}-build-${{ matrix.platform }}-${{ hashFiles('**/Makefile', '**/*.mk') }}
+        restore-keys: |
+          ${{ runner.os }}-build-${{ matrix.platform }}-
+          ${{ runner.os }}-build-
+          
+    - name: Build projects for ${{ matrix.platform }}
+      run: |
+        echo "Building projects for platform: ${{ matrix.platform }}"
+        # Add specific build commands for each platform
+        find projects -name "Makefile" -path "*/${{ matrix.platform }}/*" | head -5 | while read makefile; do
+          echo "Building $(dirname $makefile)"
+          # Uncomment and modify based on actual build process:
+          # make -C $(dirname $makefile) || echo "Build failed for $(dirname $makefile)"
+        done
+        
+    - name: Upload build artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-${{ matrix.platform }}
+        path: |
+          projects/**/build/
+          projects/**/*.bin
+          projects/**/*.elf
+        retention-days: 7

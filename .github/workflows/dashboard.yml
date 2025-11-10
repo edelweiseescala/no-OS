@@ -1,0 +1,541 @@
+name: Generate Project Metrics Dashboard
+
+on:
+  schedule:
+    # Run daily at 6 AM UTC
+    - cron: '0 6 * * *'
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  generate-dashboard:
+    name: Generate Metrics Dashboard
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Full history for trend analysis
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    - name: Install dependencies
+      run: |
+        pip install requests matplotlib seaborn pandas numpy jinja2
+
+    - name: Collect Repository Metrics
+      run: |
+        cat > collect_metrics.py << 'PYTHON_SCRIPT'
+        import requests
+        import json
+        import os
+        from datetime import datetime, timedelta
+        import subprocess
+
+        # GitHub API setup
+        headers = {
+            'Authorization': f'token {os.environ["GITHUB_TOKEN"]}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        repo = os.environ['GITHUB_REPOSITORY']
+
+        def get_workflow_runs():
+            """Get recent workflow runs"""
+            url = f'https://api.github.com/repos/{repo}/actions/runs'
+            params = {'per_page': 50, 'status': 'completed'}
+            response = requests.get(url, headers=headers, params=params)
+            return response.json().get('workflow_runs', [])
+
+        def get_commit_activity():
+            """Get commit activity for the last month"""
+            url = f'https://api.github.com/repos/{repo}/stats/commit_activity'
+            response = requests.get(url, headers=headers)
+            return response.json()
+
+        def get_pull_requests():
+            """Get recent pull requests"""
+            url = f'https://api.github.com/repos/{repo}/pulls'
+            params = {'state': 'all', 'per_page': 50}
+            response = requests.get(url, headers=headers, params=params)
+            return response.json()
+
+        def get_code_metrics():
+            """Get basic code metrics"""
+            try:
+                # Count lines of code
+                result = subprocess.run(['find', '.', '-name', '*.c', '-o', '-name', '*.h'],
+                                      capture_output=True, text=True)
+                c_files = result.stdout.strip().split('\n') if result.stdout.strip() else []
+
+                total_lines = 0
+                for file in c_files:
+                    if file and os.path.exists(file):
+                        with open(file, 'r', encoding='utf-8', errors='ignore') as f:
+                            total_lines += len(f.readlines())
+
+                # Count projects
+                projects = len([d for d in os.listdir('projects')
+                              if os.path.isdir(os.path.join('projects', d))])
+
+                # Count drivers
+                drivers = len([d for d in os.listdir('drivers')
+                             if os.path.isdir(os.path.join('drivers', d))])
+
+                return {
+                    'total_lines': total_lines,
+                    'c_files': len(c_files),
+                    'projects': projects,
+                    'drivers': drivers
+                }
+            except Exception as e:
+                print(f"Error collecting code metrics: {e}")
+                return {'total_lines': 0, 'c_files': 0, 'projects': 0, 'drivers': 0}
+
+        # Collect all metrics
+        metrics = {
+            'timestamp': datetime.now().isoformat(),
+            'workflow_runs': get_workflow_runs(),
+            'commit_activity': get_commit_activity(),
+            'pull_requests': get_pull_requests(),
+            'code_metrics': get_code_metrics()
+        }
+
+        # Save metrics
+        with open('metrics.json', 'w') as f:
+            json.dump(metrics, f, indent=2)
+
+        print("Metrics collected successfully")
+        PYTHON_SCRIPT
+
+        python collect_metrics.py
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Generate Dashboard HTML
+      run: |
+        cat > generate_dashboard.py << 'PYTHON_SCRIPT'
+        import json
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        import pandas as pd
+        from datetime import datetime, timedelta
+        import base64
+        from io import BytesIO
+        import os
+
+        # Load metrics
+        with open('metrics.json', 'r') as f:
+            metrics = json.load(f)
+
+        # Set style
+        plt.style.use('seaborn-v0_8')
+        sns.set_palette("husl")
+
+        def create_build_success_chart():
+            """Create build success rate chart"""
+            runs = metrics['workflow_runs']
+            if not runs:
+                return ""
+
+            # Group by date and calculate success rate
+            dates = []
+            success_rates = []
+
+            # Get last 30 days
+            for i in range(30):
+                date = datetime.now() - timedelta(days=i)
+                date_str = date.strftime('%Y-%m-%d')
+
+                day_runs = [r for r in runs if r['created_at'].startswith(date_str)]
+                if day_runs:
+                    success_count = len([r for r in day_runs if r['conclusion'] == 'success'])
+                    total_count = len(day_runs)
+                    success_rate = (success_count / total_count) * 100
+                    dates.append(date)
+                    success_rates.append(success_rate)
+
+            if not dates:
+                return ""
+
+            fig, ax = plt.subplots(figsize=(12, 6))
+            ax.plot(dates, success_rates, marker='o', linewidth=2, markersize=6)
+            ax.set_title('Build Success Rate (Last 30 Days)', fontsize=16, fontweight='bold')
+            ax.set_ylabel('Success Rate (%)', fontsize=12)
+            ax.set_xlabel('Date', fontsize=12)
+            ax.grid(True, alpha=0.3)
+            ax.set_ylim(0, 100)
+
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+
+            # Convert to base64
+            buffer = BytesIO()
+            plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+            buffer.seek(0)
+            image_base64 = base64.b64encode(buffer.getvalue()).decode()
+            plt.close()
+
+            return f'<img src="data:image/png;base64,{image_base64}" alt="Build Success Rate Chart">'
+
+        def create_commit_activity_chart():
+            """Create commit activity chart"""
+            activity = metrics.get('commit_activity', [])
+            if not activity:
+                return ""
+
+            # Take last 12 weeks
+            weeks = activity[-12:] if len(activity) >= 12 else activity
+
+            dates = []
+            commits = []
+
+            for week in weeks:
+                # Convert week timestamp to date
+                date = datetime.fromtimestamp(week['week'])
+                dates.append(date)
+                commits.append(week['total'])
+
+            if not dates:
+                return ""
+
+            fig, ax = plt.subplots(figsize=(12, 6))
+            bars = ax.bar(range(len(dates)), commits, alpha=0.7)
+
+            # Color bars based on activity level
+            for i, bar in enumerate(bars):
+                if commits[i] > 20:
+                    bar.set_color('#2ecc71')  # Green for high activity
+                elif commits[i] > 10:
+                    bar.set_color('#f39c12')  # Orange for medium activity
+                else:
+                    bar.set_color('#e74c3c')  # Red for low activity
+
+            ax.set_title('Weekly Commit Activity', fontsize=16, fontweight='bold')
+            ax.set_ylabel('Commits', fontsize=12)
+            ax.set_xlabel('Week', fontsize=12)
+            ax.grid(True, alpha=0.3, axis='y')
+
+            # Set x-axis labels
+            ax.set_xticks(range(len(dates)))
+            ax.set_xticklabels([d.strftime('%m/%d') for d in dates], rotation=45)
+
+            plt.tight_layout()
+
+            # Convert to base64
+            buffer = BytesIO()
+            plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+            buffer.seek(0)
+            image_base64 = base64.b64encode(buffer.getvalue()).decode()
+            plt.close()
+
+            return f'<img src="data:image/png;base64,{image_base64}" alt="Commit Activity Chart">'
+
+        def create_pr_metrics_chart():
+            """Create PR metrics chart"""
+            prs = metrics.get('pull_requests', [])
+            if not prs:
+                return ""
+
+            # Calculate PR metrics
+            open_prs = len([pr for pr in prs if pr['state'] == 'open'])
+            closed_prs = len([pr for pr in prs if pr['state'] == 'closed'])
+            merged_prs = len([pr for pr in prs if pr.get('merged_at')])
+
+            # Create pie chart
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+
+            # PR State Distribution
+            labels = ['Open', 'Merged', 'Closed']
+            sizes = [open_prs, merged_prs, closed_prs - merged_prs]
+            colors = ['#3498db', '#2ecc71', '#e74c3c']
+
+            ax1.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+            ax1.set_title('Pull Request Distribution', fontsize=14, fontweight='bold')
+
+            # PR Activity over time (last 30 days)
+            now = datetime.now()
+            pr_dates = []
+            for pr in prs:
+                created_date = datetime.strptime(pr['created_at'][:10], '%Y-%m-%d')
+                if (now - created_date).days <= 30:
+                    pr_dates.append(created_date)
+
+            if pr_dates:
+                ax2.hist(pr_dates, bins=15, alpha=0.7, color='#3498db', edgecolor='black')
+                ax2.set_title('PR Creation Activity (Last 30 Days)', fontsize=14, fontweight='bold')
+                ax2.set_ylabel('Number of PRs', fontsize=12)
+                ax2.set_xlabel('Date', fontsize=12)
+                ax2.grid(True, alpha=0.3)
+                plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
+
+            plt.tight_layout()
+
+            # Convert to base64
+            buffer = BytesIO()
+            plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+            buffer.seek(0)
+            image_base64 = base64.b64encode(buffer.getvalue()).decode()
+            plt.close()
+
+            return f'<img src="data:image/png;base64,{image_base64}" alt="PR Metrics Chart">'
+
+        # Generate charts
+        build_chart = create_build_success_chart()
+        commit_chart = create_commit_activity_chart()
+        pr_chart = create_pr_metrics_chart()
+
+        # Calculate summary statistics
+        runs = metrics['workflow_runs']
+        recent_runs = runs[:20] if runs else []
+        success_rate = (len([r for r in recent_runs if r['conclusion'] == 'success']) / len(recent_runs) * 100) if recent_runs else 0
+
+        prs = metrics.get('pull_requests', [])
+        avg_pr_time = 0
+        if prs:
+            pr_times = []
+            for pr in prs:
+                if pr.get('merged_at') and pr.get('created_at'):
+                    created = datetime.strptime(pr['created_at'][:19], '%Y-%m-%dT%H:%M:%S')
+                    merged = datetime.strptime(pr['merged_at'][:19], '%Y-%m-%dT%H:%M:%S')
+                    pr_times.append((merged - created).days)
+            avg_pr_time = sum(pr_times) / len(pr_times) if pr_times else 0
+
+        code_metrics = metrics['code_metrics']
+
+        # Generate HTML dashboard
+        html_content = f'''
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>no-OS Project Dashboard</title>
+            <style>
+                body {{
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+                    margin: 0;
+                    padding: 20px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    min-height: 100vh;
+                }}
+                .container {{
+                    max-width: 1200px;
+                    margin: 0 auto;
+                    background: white;
+                    border-radius: 15px;
+                    box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                    overflow: hidden;
+                }}
+                .header {{
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    padding: 30px;
+                    text-align: center;
+                }}
+                .header h1 {{
+                    margin: 0;
+                    font-size: 2.5em;
+                    font-weight: 300;
+                }}
+                .header p {{
+                    margin: 10px 0 0 0;
+                    opacity: 0.9;
+                    font-size: 1.1em;
+                }}
+                .metrics-grid {{
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                    gap: 20px;
+                    padding: 30px;
+                }}
+                .metric-card {{
+                    background: #f8f9fa;
+                    border-radius: 10px;
+                    padding: 25px;
+                    text-align: center;
+                    border-left: 4px solid #667eea;
+                    transition: transform 0.3s ease, box-shadow 0.3s ease;
+                }}
+                .metric-card:hover {{
+                    transform: translateY(-5px);
+                    box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+                }}
+                .metric-value {{
+                    font-size: 2.5em;
+                    font-weight: bold;
+                    color: #2c3e50;
+                    margin: 0;
+                }}
+                .metric-label {{
+                    color: #7f8c8d;
+                    font-size: 0.9em;
+                    margin: 10px 0 0 0;
+                    text-transform: uppercase;
+                    letter-spacing: 1px;
+                }}
+                .chart-section {{
+                    padding: 30px;
+                    border-top: 1px solid #ecf0f1;
+                }}
+                .chart-title {{
+                    font-size: 1.5em;
+                    color: #2c3e50;
+                    margin-bottom: 20px;
+                    font-weight: 600;
+                }}
+                .chart-container {{
+                    text-align: center;
+                    margin-bottom: 40px;
+                }}
+                .chart-container img {{
+                    max-width: 100%;
+                    height: auto;
+                    border-radius: 8px;
+                    box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+                }}
+                .status-indicator {{
+                    display: inline-block;
+                    width: 12px;
+                    height: 12px;
+                    border-radius: 50%;
+                    margin-right: 8px;
+                }}
+                .status-good {{ background-color: #2ecc71; }}
+                .status-warning {{ background-color: #f39c12; }}
+                .status-error {{ background-color: #e74c3c; }}
+                .footer {{
+                    background: #34495e;
+                    color: white;
+                    padding: 20px;
+                    text-align: center;
+                    font-size: 0.9em;
+                }}
+                .health-score {{
+                    font-size: 3em !important;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    -webkit-background-clip: text;
+                    -webkit-text-fill-color: transparent;
+                    background-clip: text;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📊 no-OS Project Dashboard</h1>
+                    <p>Last updated: {datetime.now().strftime('%B %d, %Y at %H:%M UTC')}</p>
+                </div>
+
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-value health-score">{success_rate:.0f}%</div>
+                        <div class="metric-label">
+                            <span class="status-indicator {'status-good' if success_rate >= 90 else 'status-warning' if success_rate >= 70 else 'status-error'}"></span>
+                            Build Success Rate
+                        </div>
+                    </div>
+
+                    <div class="metric-card">
+                        <div class="metric-value">{code_metrics['total_lines']:,}</div>
+                        <div class="metric-label">Lines of Code</div>
+                    </div>
+
+                    <div class="metric-card">
+                        <div class="metric-value">{code_metrics['projects']}</div>
+                        <div class="metric-label">Projects</div>
+                    </div>
+
+                    <div class="metric-card">
+                        <div class="metric-value">{code_metrics['drivers']}</div>
+                        <div class="metric-label">Drivers</div>
+                    </div>
+
+                    <div class="metric-card">
+                        <div class="metric-value">{len([pr for pr in prs if pr['state'] == 'open'])}</div>
+                        <div class="metric-label">Open Pull Requests</div>
+                    </div>
+
+                    <div class="metric-card">
+                        <div class="metric-value">{avg_pr_time:.1f}</div>
+                        <div class="metric-label">Avg PR Merge Time (days)</div>
+                    </div>
+                </div>
+
+                {f'<div class="chart-section"><div class="chart-title">🚀 Build Performance</div><div class="chart-container">{build_chart}</div></div>' if build_chart else ''}
+
+                {f'<div class="chart-section"><div class="chart-title">💻 Development Activity</div><div class="chart-container">{commit_chart}</div></div>' if commit_chart else ''}
+
+                {f'<div class="chart-section"><div class="chart-title">🔄 Pull Request Metrics</div><div class="chart-container">{pr_chart}</div></div>' if pr_chart else ''}
+
+                <div class="footer">
+                    <p>Generated automatically by GitHub Actions • <a href="https://github.com/{os.environ.get('GITHUB_REPOSITORY', '')}" style="color: #3498db;">View Repository</a></p>
+                </div>
+            </div>
+        </body>
+        </html>
+        '''
+
+        # Save dashboard
+        with open('dashboard.html', 'w') as f:
+            f.write(html_content)
+
+        print("Dashboard generated successfully")
+        PYTHON_SCRIPT
+
+        python generate_dashboard.py
+      env:
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      if: github.ref == 'refs/heads/main'
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: .
+        publish_branch: gh-pages
+        destination_dir: dashboard
+
+    - name: Upload Dashboard Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: project-dashboard
+        path: |
+          dashboard.html
+          metrics.json
+        retention-days: 30
+
+    - name: Create Job Summary
+      if: always()
+      run: |
+        cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+        ## 📊 Metrics Dashboard Generated
+
+        ### 🎯 Quick Stats
+        - **Build Success Rate**: $(python3 -c "import json; data=json.load(open('metrics.json')); runs=data['workflow_runs'][:20]; print(f'{len([r for r in runs if r[\"conclusion\"]==\"success\"])/len(runs)*100:.1f}%' if runs else '0%')")
+        - **Total Projects**: $(python3 -c "import json; print(json.load(open('metrics.json'))['code_metrics']['projects'])")
+        - **Total Drivers**: $(python3 -c "import json; print(json.load(open('metrics.json'))['code_metrics']['drivers'])")
+        - **Lines of Code**: $(python3 -c "import json; print(f\"{json.load(open('metrics.json'))['code_metrics']['total_lines']:,}\")")
+
+        ### 🔗 Links
+        - [📊 View Full Dashboard](https://cjones-adi.github.io/no-OS/dashboard/dashboard.html)
+        - [📈 Raw Metrics Data](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+        ### 📅 Next Update
+        Dashboard will be automatically updated:
+        - ✅ After each CI run completion
+        - 🕕 Daily at 6 AM UTC
+        - 🔄 On manual trigger
+        EOF
