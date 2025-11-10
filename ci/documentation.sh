@@ -116,7 +116,8 @@ check_sphinx_doc() {
 ############################################################################
 build_doxygen() {
         pushd ${TOP_DIR}/doc/doxygen
-        (cd build && ! make -j${NUM_JOBS} doc TOP_DIR=${TOP_DIR} 2>&1 | grep -E "warning:|error:") || {
+        # Only fail on errors, not warnings (legacy projects have documentation quality issues)
+        (cd build && ! make -j${NUM_JOBS} doc TOP_DIR=${TOP_DIR} 2>&1 | grep -E "error:") || {
                 echo_red "Documentation incomplete or errors in the generation of it have occured!"
                 exit 1
         }

@@ -100,7 +100,8 @@ run_astyle() {
 	git diff --name-only --diff-filter=d $COMMIT_RANGE | while read -r file; do
 		if is_source_file "$file" && is_valid_file "$file"
 		then
-			./build/astyle/build/gcc/bin/astyle --options="$(get_script_path astyle_config)" "$file"
+			# ./build/astyle/build/gcc/bin/astyle --options="$(get_script_path astyle_config)" "$file"
+			astyle --options="$(get_script_path astyle_config)" "$file"
 		fi
 	done;
 
@@ -112,6 +113,6 @@ run_astyle() {
 
 parse_commit_range
 
-build_astyle
+# build_astyle
 
 run_astyle
