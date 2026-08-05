@@ -46,4 +46,9 @@ config AFE_MAX30009
     bool "Enable MAX30009 AFE driver"
     default n
 
+config AFE_IIO_MAX30009
+    select AFE_MAX30009
+    bool "Enable MAX30009 IIO driver"
+    default n
+
 endif # AFE

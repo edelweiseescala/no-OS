@@ -17,6 +17,16 @@ if(CONFIG_MAX30009_BASIC_EXAMPLE)
     )
 endif()
 
+# IIO example
+if(CONFIG_MAX30009_IIO_EXAMPLE)
+    target_sources(max30009 PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/examples/iio/iio_example.c
+    )
+    target_include_directories(max30009 PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/examples/iio
+    )
+endif()
+
 target_include_directories(max30009 PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/common
     ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/${PLATFORM}

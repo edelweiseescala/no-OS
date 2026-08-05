@@ -7,6 +7,9 @@ choice MAX30009
 config MAX30009_BASIC_EXAMPLE
 	bool "Basic example"
 
+config MAX30009_IIO_EXAMPLE
+	bool "IIO streaming example"
+
 endchoice
 
 endmenu
