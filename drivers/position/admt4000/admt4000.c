@@ -340,7 +340,7 @@ static int admt4000_compute_crc(uint32_t data_in, uint8_t *crc_ret)
 	if (!crc_ret)
 		return -EINVAL;
 
-	for (i = ADMT4000_MAX_CRC_BIT_LEN; i >= 0; i--) {
+	for (i = ADMT4000_MAX_CRC_BIT_LEN; i >= 5; i--) {
 		xor = ((data_in >> i) & 0x1) ^ (crc >> 4);
 		crc = ((crc << 1) & 0x1E) | xor;
 		if (xor)
@@ -577,7 +577,9 @@ int admt4000_reg_read(struct admt4000_dev *device, uint8_t reg_addr,
 	if (ret)
 		return ret;
 
-	temp = no_os_field_get(ADMT4000_LIFE_CTR | ADMT4000_FAULT_MASK, buf[3]);
+	/* CRC covers {RW,A5:A0,D15:D0,1,C1:C0} — the '1' is the fixed-high bit
+	 * per Figure 18; FAULT is not part of the CRC input */
+	temp = no_os_field_get(ADMT4000_LIFE_CTR, buf[3]) | 0x4;
 
 	*reg_data = no_os_get_unaligned_be16(buf + 1);
 	crc_data_in = (((uint32_t)reg_addr << 16) | *reg_data) << 3 | temp;
@@ -765,8 +767,7 @@ int admt4000_raw_angle_read(struct admt4000_dev *device, uint16_t *angle_data)
 
 	/* Extract angle data from buffer (4 bytes each) */
 	for (i = 0; i < 2; i++) {
-		temp = no_os_field_get(ADMT4000_LIFE_CTR | ADMT4000_FAULT_MASK,
-				       buf[3 + 4 * i]);
+		temp = no_os_field_get(ADMT4000_LIFE_CTR, buf[3 + 4 * i]) | 0x4;
 
 		*angle_data = no_os_get_unaligned_be16(buf + 1 + 4 * i);
 		crc_data_in = (((uint32_t)admt4000_angle_regs[i] << 16) |

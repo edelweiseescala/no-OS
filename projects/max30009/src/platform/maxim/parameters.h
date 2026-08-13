@@ -84,7 +84,7 @@
 #define MAX30009_BOARD_NAME "MAX30009_EVKIT"
 #define MAX30009_HW_CARRIER "MAX32655_FTHR"
 #define MAX30009_ACTIVE_DEVICE_NAME "DEV_MAX30009"
-#define MAX30009_ACTIVE_DEVICE_VENDOR "Analog Devices"
+#define MAX30009_ACTIVE_DEVICE_VENDOR "Analog Devices Inc."
 
 extern struct max_i2c_init_param max30009_i2c_extra;
 extern struct max_spi_init_param max30009_spi_extra;

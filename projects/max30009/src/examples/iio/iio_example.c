@@ -51,7 +51,17 @@
 #define DATA_BUFFER_SIZE 256
 #endif
 
+#define FW_VERSION "1.0.0"
+
 static uint8_t iio_data_buffer[DATA_BUFFER_SIZE * 2 * sizeof(uint32_t)];
+
+static struct iio_ctx_attr context_attributes[] = {
+	{.name = "hw_mezzanine", .value = MAX30009_BOARD_NAME },
+	{.name = "hw_carrier", .value = MAX30009_HW_CARRIER },
+	{.name = "hw_name", .value = MAX30009_ACTIVE_DEVICE_NAME },
+	{.name = "hw_vendor", .value = MAX30009_ACTIVE_DEVICE_VENDOR },
+	{.name = "fw_version", .value = FW_VERSION },
+};
 
 int example_main(void)
 {
@@ -135,6 +145,8 @@ int example_main(void)
 	app_init_param.devices = iio_devices;
 	app_init_param.nb_devices = NO_OS_ARRAY_SIZE(iio_devices);
 	app_init_param.uart_init_params = max30009_uart_ip;
+	app_init_param.ctx_attrs = context_attributes;
+	app_init_param.nb_ctx_attr = NO_OS_ARRAY_SIZE(context_attributes);
 
 	ret = iio_app_init(&app, app_init_param);
 	if (ret)

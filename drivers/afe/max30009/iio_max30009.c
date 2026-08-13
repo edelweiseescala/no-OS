@@ -147,8 +147,6 @@ enum max30009_iio_attr_id {
 	/* System */
 	MAX30009_IIO_MASTER_MODE,
 	MAX30009_IIO_POWER_MODE,
-	/* Single-shot read: one coherent I+Q pair from the same conversion */
-	MAX30009_IIO_BIOZ_IQ_RAW,
 };
 
 static int max30009_iio_get_attr(void *device, char *buf, uint32_t len,
@@ -751,92 +749,6 @@ static int max30009_iio_get_attr(void *device, char *buf, uint32_t len,
 		val = no_os_field_get(MAX30009_SHDN_MSK, reg_val);
 		break;
 
-	case MAX30009_IIO_BIOZ_IQ_RAW: {
-		/*
-		 * Single-shot read: drain accumulated FIFO samples (no flush)
-		 * looking for the latest I+Q pair.  When both tags are found,
-		 * cache them in iio_dev and return the pair.  If the FIFO is
-		 * empty but a valid pair was cached from a previous read, return
-		 * that cached pair.  Returns -ENODATA when BioZ is disabled and
-		 * no cached value exists.  Returns -EBUSY during buffer streaming.
-		 *
-		 * We never flush before reading because at high OSR settings the
-		 * conversion period can exceed 10 seconds; flushing would leave
-		 * the FIFO empty until the next conversion completes.
-		 */
-		uint8_t raw_data[MAX30009_FIFO_DATA_SIZE * 32];
-		uint32_t word;
-		int32_t i_val = 0, q_val = 0;
-		bool has_i = false, has_q = false;
-		uint16_t count;
-		uint8_t k;
-
-		if (iio_dev->buffer_active)
-			return -EBUSY;
-
-		ret = max30009_reg_read(dev, MAX30009_REG_BIOZ_CONFIGURATION1,
-					&reg_val);
-		if (ret)
-			return ret;
-		if (!no_os_field_get(MAX30009_BIOZ_BG_EN_MSK, reg_val) ||
-		    (!no_os_field_get(MAX30009_BIOZ_I_EN_MSK, reg_val) &&
-		     !no_os_field_get(MAX30009_BIOZ_Q_EN_MSK, reg_val))) {
-			if (iio_dev->iq_valid)
-				return snprintf(buf, len, "%ld %ld",
-						(long)iio_dev->last_i,
-						(long)iio_dev->last_q);
-			return -ENODATA;
-		}
-
-		ret = max30009_fifo_get_count(dev, &count);
-		if (ret)
-			return ret;
-
-		if (count > 0) {
-			count = no_os_min(count, (uint16_t)32);
-			ret = max30009_read_fifo_data(dev, raw_data,
-						      count * MAX30009_FIFO_DATA_SIZE);
-			if (ret)
-				return ret;
-
-			for (k = 0; k < count; k++) {
-				word = ((uint32_t)raw_data[k * 3] << 16) |
-				       ((uint32_t)raw_data[k * 3 + 1] << 8) |
-				        (uint32_t)raw_data[k * 3 + 2];
-
-				switch (no_os_field_get(MAX30009_TAG_MASK, word)) {
-				case MAX30009_TAG_BIOZ_I:
-					i_val = MAX30009_SIGN_EXT(word & MAX30009_DATA_MASK);
-					has_i = true;
-					break;
-				case MAX30009_TAG_BIOZ_Q:
-					q_val = MAX30009_SIGN_EXT(word & MAX30009_DATA_MASK);
-					has_q = true;
-					break;
-				default:
-					break;
-				}
-			}
-		}
-
-		if (has_i || has_q) {
-			if (!has_i && iio_dev->iq_valid)
-				i_val = iio_dev->last_i;
-			if (!has_q && iio_dev->iq_valid)
-				q_val = iio_dev->last_q;
-			iio_dev->last_i = i_val;
-			iio_dev->last_q = q_val;
-			iio_dev->iq_valid = true;
-		} else if (iio_dev->iq_valid) {
-			i_val = iio_dev->last_i;
-			q_val = iio_dev->last_q;
-		} else {
-			return -ENODATA;
-		}
-
-		return snprintf(buf, len, "%ld %ld", (long)i_val, (long)q_val);
-	}
-
 	default:
 		return -EINVAL;
 	}
@@ -962,8 +874,6 @@ static int max30009_iio_set_attr(void *device, char *buf, uint32_t len,
 		return max30009_set_bioz_config(dev, &bioz_cfg);
 
 	case MAX30009_IIO_BIOZ_ENABLED:
-		if (!val)
-			iio_dev->iq_valid = false;
 		return max30009_bioz_enable(dev, (bool)val);
 
 	case MAX30009_IIO_BIOZ_BG_ENABLED:
@@ -1286,7 +1196,6 @@ static int max30009_iio_pre_enable(void *dev, uint32_t mask)
 		     iio_dev->fifo_buf->size);
 	iio_dev->samples_available = 0;
 	iio_dev->active_mask = mask;
-	iio_dev->iq_valid = false;
 	iio_dev->buffer_active = true;
 
 	return 0;
@@ -1502,7 +1411,6 @@ static struct iio_attribute max30009_iio_debug_attrs[] = {
  */
 static struct iio_attribute max30009_iio_bioz0_attrs[] = {
 	MAX30009_ATTR("enable",				MAX30009_IIO_BIOZ_ENABLED),
-	MAX30009_ATTR_RO("iq_raw",			MAX30009_IIO_BIOZ_IQ_RAW),
 	END_ATTRIBUTES_ARRAY
 };
 
@@ -1518,7 +1426,7 @@ static struct scan_type max30009_scan_type = {
 	.realbits = 20,
 	.storagebits = 32,
 	.shift = 0,
-	.is_big_endian = false,
+	.is_big_endian = true,
 };
 
 static struct iio_channel max30009_channels[] = {

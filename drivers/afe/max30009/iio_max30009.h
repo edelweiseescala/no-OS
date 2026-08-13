@@ -79,10 +79,6 @@ struct max30009_iio_dev {
 	volatile bool buffer_active;
 	/* Channel mask from pre_enable; bit N set means channel N is active. */
 	uint32_t active_mask;
-	/* Last valid I/Q pair returned by iq_raw; valid when iq_valid is true. */
-	int32_t last_i;
-	int32_t last_q;
-	bool iq_valid;
 };
 
 struct max30009_iio_init_param {

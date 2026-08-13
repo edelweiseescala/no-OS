@@ -226,7 +226,7 @@ extern "C" {
 #define ADMT4000_RESET_HOLD_TIME_MS	1
 
 /* Maximum data bit length for CRC */
-#define ADMT4000_MAX_CRC_BIT_LEN	25
+#define ADMT4000_MAX_CRC_BIT_LEN	30
 
 enum admt4000_faults {
 	ADMT4000_FAULT_VDD_UV = 0,
