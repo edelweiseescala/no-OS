@@ -64,6 +64,16 @@ if(NOT CMAKE_TOOLCHAIN_FILE)
         "Toolchain file not found: ${_toolchain_check_path}. Is PLATFORM=${PLATFORM} a supported platform?")
 endif()
 
+# An out-of-tree platform keeps its board configs in its own repository, so the
+# ${PLATFORM}-derived path above does not exist in this tree. Let such a build
+# point the defconfig lookup at its own directory rather than forcing a copy of
+# the board files in here. Ignored by every in-tree build, which never sets it.
+if(DEFINED NO_OS_EXTRA_BOARD_CONFIG_DIR AND
+   EXISTS "${NO_OS_EXTRA_BOARD_CONFIG_DIR}/${BOARD_CONFIG_FILE}")
+    set(NO_OS_DEFCONFIG_PATH "${NO_OS_EXTRA_BOARD_CONFIG_DIR}/${BOARD_CONFIG_FILE}")
+    message(STATUS "Using out-of-tree board config dir: ${NO_OS_EXTRA_BOARD_CONFIG_DIR}")
+endif()
+
 # Set DEFAULT_DEFCONFIG based on detected paths
 if(DEFINED NO_OS_DEFCONFIG_PATH)
     set(DEFAULT_DEFCONFIG "${NO_OS_DEFCONFIG_PATH}")
