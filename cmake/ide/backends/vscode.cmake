@@ -40,6 +40,48 @@ function(ide_vscode_configure PROJECT_TARGET)
         set(OPENOCD_PATH_CONFIG "")
     endif()
 
+    # --- pyOCD configuration for launch.json (optional) ---
+    # Emitted only when the platform names a pyOCD target. Also optional:
+    #   PYOCD_PATH         pyocd executable, when it may not be on PATH
+    #   PYOCD_PACK         CMSIS-Pack (.pack file or unpacked directory)
+    #   PYOCD_SERVER_ARGS  extra 'pyocd gdbserver' arguments (a CMake list)
+    #   PYOCD_NUM_CORES    pyocd serves core N on gdb port base+N, so on a
+    #   PYOCD_CORE         multicore part these pick the core to debug
+    set(PYOCD_LAUNCH_CONFIG "")
+    if(PYOCD_TARGET)
+        set(_pyocd "")
+        if(PYOCD_PATH)
+            string(APPEND _pyocd "\n            \"serverpath\": \"${PYOCD_PATH}\",")
+        endif()
+        if(PYOCD_PACK)
+            string(APPEND _pyocd "\n            \"cmsisPack\": \"${PYOCD_PACK}\",")
+        endif()
+        if(PYOCD_SERVER_ARGS)
+            list(JOIN PYOCD_SERVER_ARGS "\", \"" _pyocd_args)
+            string(APPEND _pyocd "\n            \"serverArgs\": [\"${_pyocd_args}\"],")
+        endif()
+        # cortex-debug waits for "GDB server started on port", but pyOCD
+        # (0.45.1 here) prints "GDB server listening on port N (core M)".
+        set(_pyocd_ready "GDB server (started|listening) (at|on) port")
+        if(PYOCD_NUM_CORES)
+            string(APPEND _pyocd "\n            \"numberOfProcessors\": ${PYOCD_NUM_CORES},")
+            string(APPEND _pyocd "\n            \"targetProcessor\": ${PYOCD_CORE},")
+            string(APPEND _pyocd_ready " \\\\d+ \\\\(core ${PYOCD_CORE}\\\\)")
+        endif()
+        string(APPEND _pyocd "\n            \"overrideGDBServerStartedRegex\": \"${_pyocd_ready}\",")
+        set(PYOCD_LAUNCH_CONFIG ",
+        {
+            \"name\": \"pyOCD Debug\",
+            \"type\": \"cortex-debug\",
+            \"request\": \"launch\",
+            \"servertype\": \"pyocd\",
+            \"targetId\": \"${PYOCD_TARGET}\",${_pyocd}
+            \"executable\": \"$<TARGET_FILE:${PROJECT_TARGET}>\",
+            \"cwd\": \"${CMAKE_SOURCE_DIR}\",
+            \"runToEntryPoint\": \"main\"
+        }")
+    endif()
+
     # --- IntelliSense mode detection ---
     get_filename_component(COMPILER_NAME "${CMAKE_C_COMPILER}" NAME_WE)
     if("${COMPILER_NAME}" MATCHES "clang")

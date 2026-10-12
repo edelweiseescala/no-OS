@@ -27,6 +27,6 @@
             ],
             "runToEntryPoint": "main",
             "showDevDebugOutput": "none"
-        }
+        }@PYOCD_LAUNCH_CONFIG@
     ]
 }
