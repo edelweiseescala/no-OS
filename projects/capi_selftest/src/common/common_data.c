@@ -196,6 +196,10 @@ struct capi_irq_config irq_config = {
 #endif /* IRQ_CTRL_IDENTIFIER */
 
 #ifdef SPI_OPS
+#ifndef SPI_DMA_HANDLE
+#define SPI_DMA_HANDLE	NULL
+#endif /* SPI_DMA_HANDLE */
+
 /**
  * @brief Platform-specific extra data for the SPI controller.
  */
@@ -207,7 +211,7 @@ static SPI_EXTRA_TYPE spi_extra = SPI_EXTRA_INIT;
 const struct capi_spi_config spi_controller_config = {
 	.ops = SPI_OPS,
 	.identifier = SPI_IDENTIFIER,
-	.dma_handle = NULL,
+	.dma_handle = SPI_DMA_HANDLE,
 	.three_pin_mode = false,
 	.loopback = false,
 	.clk_freq_hz = SPI_CLK_FREQ,
