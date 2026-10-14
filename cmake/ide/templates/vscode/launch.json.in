@@ -8,7 +8,7 @@
             "servertype": "jlink",
             "executable": "$<TARGET_FILE:@PROJECT_TARGET_NAME@>",
             "cwd": "@CMAKE_SOURCE_DIR@",
-            "device": "@TARGET@",
+            "device": "@JLINK_LAUNCH_DEVICE@",
             "runToEntryPoint": "main"
         },
         {

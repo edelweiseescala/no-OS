@@ -40,6 +40,15 @@ function(ide_vscode_configure PROJECT_TARGET)
         set(OPENOCD_PATH_CONFIG "")
     endif()
 
+    # --- J-Link configuration for launch.json ---
+    # JLinkGDBServer -device needs a SEGGER device name, which is not always
+    # the no-OS TARGET; a platform can set JLINK_DEVICE to override it.
+    if(JLINK_DEVICE)
+        set(JLINK_LAUNCH_DEVICE "${JLINK_DEVICE}")
+    else()
+        set(JLINK_LAUNCH_DEVICE "${TARGET}")
+    endif()
+
     # --- pyOCD configuration for launch.json (optional) ---
     # Emitted only when the platform names a pyOCD target. Also optional:
     #   PYOCD_PATH         pyocd executable, when it may not be on PATH
