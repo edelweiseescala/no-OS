@@ -136,7 +136,7 @@
 
 #elif (TARGET_NUM == 32690)
 
-#define UART_IDENTIFIER		3U
+#define UART_IDENTIFIER		2U
 #define UART_OPS		&max_capi_uart_ops
 #define UART_BAUDRATE		115200
 #define UART_EXTRA_TYPE		struct max_capi_uart_extra
@@ -147,7 +147,7 @@
  * UART loopback runner for test_uart.c (must NOT be the console UART).
  * MAX32690EVKIT: use UART2 on P1.9/P1.10 and strap TX<->RX externally.
  */
-#define UART_ASYNC_IDENTIFIER	2U
+#define UART_ASYNC_IDENTIFIER	0U
 #define UART_ASYNC_OPS		&max_capi_uart_ops
 #define UART_ASYNC_EXTRA_TYPE	struct max_capi_uart_extra
 #define UART_ASYNC_EXTRA_INIT	{ .vssel = MAX_CAPI_GPIO_VSSEL_VDDIOH, .use_irq = true }
@@ -164,12 +164,12 @@
 #define GPIO_OUTPUT_EXTRA	struct max_capi_gpio_extra_config
 #define GPIO_OUTPUT_EXTRA_INIT	{ .func = MAX_CAPI_GPIO_FUNC_OUT, .pin_offset = 9U }
 
-#define GPIO_INPUT_IDENTIFIER	2U
+#define GPIO_INPUT_IDENTIFIER	0U
 #define GPIO_INPUT_NUM_PINS	1U
 #define GPIO_INPUT_OPS		&max_capi_gpio_ops
-#define GPIO_INPUT_NAME		"P2.12"
+#define GPIO_INPUT_NAME		"P0.8"
 #define GPIO_INPUT_EXTRA	struct max_capi_gpio_extra_config
-#define GPIO_INPUT_EXTRA_INIT	{ .func = MAX_CAPI_GPIO_FUNC_IN, .pin_offset = 12U }
+#define GPIO_INPUT_EXTRA_INIT	{ .func = MAX_CAPI_GPIO_FUNC_IN, .pin_offset = 8U }
 
 /*
  * Output and input share one port here, so a port-wide write would drive the
@@ -180,14 +180,14 @@
 
 #define GPIO_OUTPUT_PIN_NUMBERS	{ 0 }
 #define GPIO_INPUT_PIN_NUMBERS	{ 0 }
-#define GPIO_INPUT_IRQ_PIN	12U
+#define GPIO_INPUT_IRQ_PIN	8U
 
 /*
  * SPI async delivery mode. SPI_HAS_IRQ and SPI_HAS_DMA are mutually exclusive:
  * the loopback test configures exactly one delivery path per build.
  */
-#define SPI_HAS_IRQ	0
-#define SPI_HAS_DMA	1
+#define SPI_HAS_IRQ	1
+#define SPI_HAS_DMA	0
 
 /* IRQ controller - NVIC, no base address needed. */
 #define IRQ_CTRL_IDENTIFIER	0U
@@ -217,16 +217,17 @@
 /**
  * TMR0 on MAX32690EVKIT: 32-bit general purpose timer.
  *
- * output_freq_hz = 1 MHz gives 1 us resolution. TIMER_COUNTER_MAX must be one
+ * output_freq_hz = 8 MHz reduces same-tick back-to-back counter reads in
+ * TIMER.BASIC while keeping period/overflow tests stable. TIMER_COUNTER_MAX must be one
  * less than a power of two so the BASIC rate delta stays correct across a
  * wrap, and the wrap period must sit between the rate window (10 ms) and the
- * ASYNC_IRQ overflow timeout so an overflow actually fires: 0x3FFFF at 1 MHz
- * is ~262 ms.
+ * ASYNC_IRQ overflow timeout so an overflow actually fires: 0x3FFFF at 8 MHz
+ * is ~32.8 ms.
  */
 #define TIMER_IDENTIFIER		0U
 #define TIMER_OPS			&max_capi_timer_ops
 #define TIMER_INPUT_CLK_HZ		0
-#define TIMER_OUTPUT_FREQ_HZ		1000000U
+#define TIMER_OUTPUT_FREQ_HZ		8000000U
 #define TIMER_EXTRA_TYPE		struct max_capi_timer_extra
 #define TIMER_EXTRA_INIT		{ .use_irq = true }
 
