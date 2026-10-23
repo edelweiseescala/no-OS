@@ -21,9 +21,9 @@ Supported Evaluation Boards
 Overview
 --------
 
-The ADMT4000 is a magnetic turn, counter sensor capable of recording turns of an 
-external magnetic field with zero power. The absolute position, including the 
-number of turns, is reported via a serial peripheral interface (SPI). 
+The ADMT4000 is a magnetic turn, counter sensor capable of recording turns of an
+external magnetic field with zero power. The absolute position, including the
+number of turns, is reported via a serial peripheral interface (SPI).
 
 Hardware Specifications
 -----------------------
@@ -32,11 +32,15 @@ Power Supply Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 For the EVAL-ADMT4000ARD1Z, the power supply is provided by the SDP-K1 via the 5V
-from the USB-C connector. At least 9V DC power supply is also required via the 
-EVAL-ADMT4000ARD1Z's DC barrel jack to power the motor assembly. 
+from the USB-C connector. At least 9V DC power supply is also required via the
+EVAL-ADMT4000ARD1Z's DC barrel jack to power the motor assembly.
 
 For the EVAL-ADMT4000ARD2Z, since there is no motor in this kit, only the 5V power
 supply from the USB-C connector is required.
+
+The same applies when the shield is mounted on the AD-APARD32690-SL: the 5V rail
+is supplied by the carrier, and the EVAL-ADMT4000ARD1Z still needs its own 9V DC
+barrel jack supply for the motor assembly.
 
 **Pin Description**:
 
@@ -107,7 +111,7 @@ Basic example
 The basic example demonstrates the basic functionalities of the ADMT4000, and
 performs capture of turns, angles, temperature, sine, cosine, radius, GPIO states,
 and fault from the ADMT4000 in a while loop with a minimum interval of 500 ms.
-Data is printed in the UART console. Thus, tools like tera-term, putty, and other 
+Data is printed in the UART console. Thus, tools like tera-term, putty, and other
 terminals can be used to view the data by setting the UART baud rate to 230400.
 
 To build the basic example:
@@ -117,11 +121,15 @@ To build the basic example:
         python tools/scripts/no_os_build.py build \
                 --project admt4000 --variant basic --board sdp-ck1z
 
+        # or, on the AD-APARD32690-SL (MAX32690) carrier
+        python tools/scripts/no_os_build.py build \
+                --project admt4000 --variant basic --board ad-apard32690-sl
+
 IIO example
 ^^^^^^^^^^^
 
 The IIO device driver contains the IIO specific implementations for the ADMT4000.
-This example project runs an IIOD server on the board, which can be accessed by 
+This example project runs an IIOD server on the board, which can be accessed by
 users from host computers via IIO clients through libiio. IIO utilities such as
 iio_info, iio_attr, and iio_readdev can be used to interact with the IIO device.
 IIO Oscilloscope and Scopy 2.0 can also be used for simple data visualization.
@@ -153,6 +161,11 @@ In order to build the IIO project:
 
         python tools/scripts/no_os_build.py build \
                 --project admt4000 --variant iio_trigger_tmc5240 --board sdp-ck1z
+
+        # or, on the AD-APARD32690-SL (MAX32690) carrier
+        python tools/scripts/no_os_build.py build \
+                --project admt4000 --variant iio_trigger_tmc5240 \
+                --board ad-apard32690-sl
 
 No-OS Supported Platforms
 -------------------------
@@ -192,4 +205,70 @@ Replace ``--variant`` / ``--board`` accordingly.
 	# build and flash (requires a connected debug probe)
 	python tools/scripts/no_os_build.py build \
 		--project admt4000 --variant basic --board sdp-ck1z \
+		--probe openocd --flash
+
+Maxim Platform
+^^^^^^^^^^^^^^
+
+**Used hardware**
+
+* `AD-APARD32690-SL <https://www.analog.com/en/resources/evaluation-hardware-and-software/evaluation-boards-kits/ad-apard32690-sl.html>`_
+
+The EVAL-ADMT4000ARD1Z / EVAL-ADMT4000ARD2Z plugs directly into the Arduino
+headers of the AD-APARD32690-SL. The shield signals are routed to the
+following MAX32690 pins:
+
+	==============  ==============  ==================  ==========================
+	Arduino Pin     Name            MAX32690 Pin        Function
+	==============  ==============  ==================  ==========================
+	A0              GPIO5           P3.0                ADMT4000 GPIO5/BOOTLOAD
+	A1              SHDN_N          P3.1                Coil driver power control
+	A2              RSTB            P3.2                ADMT4000 reset
+	A3              V_EN            P3.3                ADMT4000 supply enable
+	D2              GPIO2           P2.13               ADMT4000 GPIO2
+	D3              GPIO0           P2.15               ADMT4000 GPIO0/BUSY
+	D4              COIL_RS         P0.8                Magnetic reset coil drive
+	D5              GPIO1           P0.7                ADMT4000 GPIO1/CNV
+	D6              GPIO3           P1.24               ADMT4000 GPIO3/ACALC
+	D7              CS_MOTOR        P1.25 (SPI1 SS1)    TMC5240 chip select
+	D8              GPIO4           P1.31               ADMT4000 GPIO4/FAULT
+	D9              DIAG1           P1.30               TMC5240 DIAG1
+	D10             CS_MT           P1.23 (SPI1 SS0)    ADMT4000 chip select
+	D11             MOSI            P1.29 (SPI1 MOSI)   SPI MOSI
+	D12             MISO            P1.28 (SPI1 MISO)   SPI MISO
+	D13             SCK             P1.26 (SPI1 SCK)    SPI SCK
+	SDA             I2C SDA         P2.17 (I2C1 SDA)    EEPROM I2C SDA
+	SCL             I2C SCL         P2.18 (I2C1 SCL)    EEPROM I2C SCL
+	==============  ==============  ==================  ==========================
+
+All Arduino header signals are driven from the 3.3 V VDDIOH domain. The
+console is exposed on UART0, which is wired to the on-board USB-to-UART
+bridge; set the terminal baud rate to 230400.
+
+**Build Command**
+
+For toolchain setup and prerequisites, see the
+:doc:`Maxim CMake build guide </build_guides/build_maxim_cmake>`.
+
+Available variants: ``basic``, ``iio_trigger``, ``iio_trigger_tmc5240``.
+Available boards: ``ad-apard32690-sl``.
+Replace ``--variant`` / ``--board`` accordingly.
+
+.. code-block:: bash
+
+	# set the path to the Maxim SDK (only if it is not in a default
+	# install location)
+	export MAXIM_LIBRARIES=</path/to/MaximSDK/Libraries>
+	# Windows (PowerShell):
+	#   $env:MAXIM_LIBRARIES = "C:\MaximSDK\Libraries"
+
+	cd no-OS
+
+	# build the project (basic example on the AD-APARD32690-SL board)
+	python tools/scripts/no_os_build.py build \
+		--project admt4000 --variant basic --board ad-apard32690-sl
+
+	# build and flash (requires a connected debug probe)
+	python tools/scripts/no_os_build.py build \
+		--project admt4000 --variant basic --board ad-apard32690-sl \
 		--probe openocd --flash

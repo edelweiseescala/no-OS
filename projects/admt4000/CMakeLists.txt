@@ -33,9 +33,16 @@ if(CONFIG_ADMT4000_IIO_TRIGGER_EXAMPLE)
         ${PCL_SOURCE_DIR}/board_info
         ${PCL_SOURCE_DIR}/sdp_k1_sdram
     )
-    target_compile_definitions(admt4000 PRIVATE
-        ACTIVE_PLATFORM=STM32_PLATFORM
-    )
+    if(PLATFORM STREQUAL "maxim")
+        target_compile_definitions(admt4000 PRIVATE
+            ACTIVE_PLATFORM=MAXIM_PLATFORM
+        )
+    else()
+        target_compile_definitions(admt4000 PRIVATE
+            ACTIVE_PLATFORM=STM32_PLATFORM
+        )
+    endif()
+    target_compile_definitions(admt4000 PRIVATE IIO_IGNORE_BUFF_OVERRUN_ERR)
     target_compile_definitions(no-os PRIVATE IIO_IGNORE_BUFF_OVERRUN_ERR)
     # precision-converters board_info.c uses sprintf without including
     # <stdio.h>; GCC 14+ treats implicit function declarations as errors.

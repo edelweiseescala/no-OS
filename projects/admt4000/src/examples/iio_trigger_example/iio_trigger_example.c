@@ -77,24 +77,9 @@ int example_main()
 	struct tmc5240_iio_dev_init_param tmc_iio_ip;
 #endif
 	uint32_t nb_ctx_attr;
-	bool hw_mezzanine_is_valid = false;
-	no_os_mdelay(2000);
-
-	ret = no_os_eeprom_init(&eeprom_desc, &eeprom_ip);
-	if (ret)
-		return ret;
-
-	no_os_mdelay(2000);
-	ret = get_iio_context_attributes_ex(&iio_ctx_attrs,
-					    &nb_ctx_attr,
-					    eeprom_desc,
-					    NULL,
-					    HW_CARRIER_NAME,
-					    &hw_mezzanine_is_valid,
-					    FIRMWARE_VERSION);
-
-	if (ret)
-		return ret;
+	// admt4000_i2c_pins_fixup();
+	iio_ctx_attrs = NULL;
+	nb_ctx_attr = 0;
 
 	no_os_mdelay(3);
 
@@ -182,8 +167,8 @@ int example_main()
 	app_init_param.trigs = trigs;
 	app_init_param.nb_trigs = NO_OS_ARRAY_SIZE(trigs);
 	app_init_param.irq_desc = admt4000_irq_desc;
-	app_init_param.ctx_attrs = iio_ctx_attrs;
-	app_init_param.nb_ctx_attr = nb_ctx_attr;
+	// app_init_param.ctx_attrs = iio_ctx_attrs;
+	// app_init_param.nb_ctx_attr = nb_ctx_attr;
 
 	ret = iio_app_init(&app, app_init_param);
 
